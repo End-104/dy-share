@@ -32,3 +32,13 @@ _set_state.py
 *.db-wal
 *.db-shm
 *.db-journal
+
+# 运行时状态：锁与基线台账都是「本机的事实」，跟着仓库走会把别的机器上的
+# 起点（基线条数）和别人的 pid 一起带过来 —— 带的 pid 死不掉会让守护一直 exit 3，
+# 带的旧基线会让新单按别的机器的起点算缺量。都在本机生成。
+intake.lock
+order_*.lock
+baseline/
+intake_state.json
+pace_state.json
+

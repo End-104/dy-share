@@ -50,6 +50,7 @@ import order_baseline as B
 
 function = FunctionApp()
 
+CODE_VERSION = '2026-11-17.3'   # 每次改动代码都要动这个号，窗口一开就能看出跑的是哪一份
 LOSE_NUM = 5                # 余量：分享按真实增量结算，留 5 条收口，留大等于白刷
 THREADS = int(sys.argv[3]) if len(sys.argv) > 3 and str(sys.argv[3]).isdigit() else 20
 # 每单每轮最长耗时（秒）。原来是 2400，给「1800 条满额单一次吃完」留的余量；
@@ -269,6 +270,12 @@ last_list_n = -1            # 上次打的订单数量，数量变了立刻打�
 skip_log_ts = {}            # order_sn -> 上次打这个单的跳过提示的时间
 zero_since = {}             # order_sn -> 这一串零增量是从什么时候开始的
 
+# 版本横幅：窗口一开就打印，用来确认跑的是这份代码而不是某个旧副本。
+# 为什么必须打：3253143 / 3253177 被误判完成时，跑的正是没有基线补丁的旧副本，
+# 而日志里没有任何一行能区分新旧，只能靠肉眼看路径。有了这行，路径和版本一起露出来。
+print('[分享端] 版本 {} | {} | 缺量口径=本单基线台账，无基线不判完成'.format(
+    CODE_VERSION, os.path.abspath(__file__)))
+
 
 def order_link(order) -> str:
     """从订单 params 里取作品链接。params 是 [{alias,name,value}] 数组。"""
@@ -453,18 +460,31 @@ while True:
                 # startNum=0 不是「起点是 0」，是这个货号的平台不下发基线（1763/643 实测全 0）。
                 # 拿 0 直接算 净增 = 绝对值 - 0，等于把视频历史总分享量算成本次交付：
                 # 3252608（下 100 条、视频历史 500）第一轮就 100-500=-400 <= 5，40 秒写 4 完成，
-                # 一条都没发。所以这里先补基线：本地台账优先，没有就用此刻的绝对值打基线并回写平台。
+                # 一条都没发。3253143 / 3253177 是同一处病在旧副本上又犯了一次：
+                # 视频已被前几单刷到 698，新单平台 startNum 仍回 0，6 秒内 100-698<0 直接判完成，
+                # 平台侧留在 0/0。所以基线只认本单自己的台账，落不下去就整轮不判完成，
+                # 绝不允许带着 start_num=0 继续往下算缺量 —— 那是唯一能把两行数算成负数的入口。
                 start_num = B.ensure(order_sn, aweme_id, start_num)
                 if start_num <= 0 and current >= 0:
                     start_num = B.put(order_sn, aweme_id, current)
                     if start_num > 0:
-                        function.update_order_progress(order_sn, start_num, start_num)
                         show_message(f'第 {looper_num} 次 | {order_sn}', '基线落地',
                                      f'平台 startNum=0 → 本地基线 {start_num}，缺量按本地算')
+                if start_num <= 0:
+                    show_message(f'第 {looper_num} 次 | {order_sn}', '基线未定',
+                                 f'当前分享量 {current}，本地台账没建起来，本轮不判完成')
+                    del order
+                    continue
+                # 每轮把 startNum / currentNum 回写平台。为什么每轮都写：
+                # 从前只在基线落地那一刻写一次，之后平台一直是 0/0，「进度没动却已完成」
+                # 这种单在后台看不出来，是这次两个单被误判完成却没人发现的原因。
+                if current >= start_num:
+                    function.update_order_progress(order_sn, start_num, current)
                 surplus_num = order_num - (current - start_num)
-                if surplus_num <= LOSE_NUM:
+                if surplus_num <= LOSE_NUM and current >= start_num:
                     show_message(f'第 {looper_num} 次 | {order_sn}', '订单完成',
-                                 function.update_order_state(order_sn, 4, '订单完成'))
+                                 f'净增 {current - start_num}/{order_num} | 基线 {start_num} | '
+                                 + str(function.update_order_state(order_sn, 4, '订单完成')))
                     zero_rounds.pop(order_sn, None)
                     zero_skip.pop(order_sn, None)
                     del order
@@ -521,7 +541,7 @@ while True:
                     surplus_num = order_num - (current - start_num)
                     # 硬夹：本轮目标永远不超过「下单量 - 已净增」，也不超过视频当日剩余额度
                     target = min(target, max(0, surplus_num), room)
-                if surplus_num <= LOSE_NUM:
+                if surplus_num <= LOSE_NUM and current >= start_num and start_num > 0:
                     show_message(f'第 {looper_num} 次 | {order_sn}', '订单完成',
                                  f'净增 {current - start_num}/{order_num}，'
                                  + str(function.update_order_state(order_sn, 4, '订单完成')))

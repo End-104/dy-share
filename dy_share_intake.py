@@ -41,6 +41,7 @@ ONCE = str(os.environ.get('SHARE_INTAKE_ONCE', '0')).lower() not in ('0', 'false
 DRY = str(os.environ.get('SHARE_INTAKE_DRY', '0')).lower() not in ('0', 'false', 'no', 'off')
 STATE_FILE = os.path.join(BASE, 'intake_state.json')
 LOCK_FILE = os.path.join(BASE, 'intake.lock')
+CODE_VERSION = '2026-11-17.3'   # 与 ayk_dy_share_handler.py 同号，服务器上跑的是哪份一看就知道
 
 
 def show(tag, msg, content=''):
@@ -52,6 +53,14 @@ def _pid_alive(pid):
     """Windows 上不能用 os.kill(pid, 0) 判活：CPython 会走 TerminateProcess 把人杀掉。"""
     if pid <= 0:
         return False
+    if os.name != 'nt':
+        # 非 Windows（服务器若是 Linux）没有 windll，走 kill(pid, 0) 探活；
+        # 原来这里只有 windll 分支，异常被吞成 False，锁等于失效，两个守护会同时扫单。
+        try:
+            os.kill(int(pid), 0)
+            return True
+        except Exception:
+            return False
     try:
         k32 = ctypes.windll.kernel32
     except Exception:
@@ -202,6 +211,21 @@ class Api(object):
                                 {'orderSN': order_sn, 'state': int(state), 'remarks': remark})
         return '{} {}'.format(code, text[:80])
 
+    def progress(self, order_sn, start, current):
+        """回写 startNum / currentNum。
+
+        为什么守护也要写：判完成只看这两个数，而写它们的只有窗口。
+        窗口没跑起来或者半路挂了，平台侧就一直挂在 0/0，后台看不出净增，
+        「6 秒完成、一条没发」这种单也只有对着 0/0 才认得出是误判。
+        """
+        if DRY:
+            show(order_sn, '演练写进度', 'start={} current={}'.format(start, current))
+            return 'dry'
+        code, text = self._post('/api/supplier/order/v2/progress',
+                                {'orderSN': order_sn, 'startNum': int(start),
+                                 'currentNum': int(current)})
+        return '{} {}'.format(code, text[:80])
+
     def exec_num(self, order_sn):
         """三方接口回已执行量（裸标量）；失败返回 None，不要当成 0。"""
         req = urllib.request.Request('{}{}'.format(self.three_url, 'execNum?order_sn={}'.format(order_sn)),
@@ -287,12 +311,18 @@ def job_complete(apps, state):
             if start <= 0:
                 start = B.get(sn)
                 if start <= 0:
-                    continue
-                if current <= 0:
-                    continue          # 一个执行量都没回写过，谈不上完成
+                    continue          # 本地也没基线：这单还没真正开工，判完成就是凭 0/0 造完成
+            if current <= start:
+                # 净增 <= 0：currentNum 还是 0（窗口一次都没回写），或者平台 startNum
+                # 比实际计数还大（改过基线的老单）。两种都不构成完成，宁可等窗口下一轮。
+                continue
             remain = number - (current - start)
             if remain > LOSE_NUM:
                 continue
+            # 判完成前先把进度落一次：平台上的 startNum / currentNum 必须和这里的判据
+            # 同源。不落的话后台看到的永远是 0/0 已完成，「一条没发却完成」就会被当成
+            # 正常单，3253143 / 3253177 就是这么混过去的。
+            app.progress(sn, start, current)
             last = ''
             for attempt in range(1, CONFIRM_RETRY + 1):
                 app.set_state(sn, 4, '订单完成')
@@ -344,6 +374,10 @@ def main():
     if not hold_lock():
         return 3                  # 3 给启动脚本识别「已有实例」，别在重启循环里空转
     atexit.register(release_lock)
+    # 版本横幅跟着锁一起打：能进到这里说明这份文件真的在跑，
+    # 服务器上「明明改了却没生效」十次有九次是跑的不是同一份文件。
+    show('守护', '版本', '{} | {} | 货号 {}'.format(
+        CODE_VERSION, os.path.abspath(__file__), ','.join(GOODS)))
     apps = []
     for goods in GOODS:
         try:
