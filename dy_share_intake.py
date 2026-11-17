@@ -25,6 +25,8 @@ import time
 import urllib.error
 import urllib.request
 
+import order_baseline as B
+
 BASE = os.path.dirname(os.path.abspath(__file__))
 GOODS = [g.strip() for g in os.environ.get('SHARE_GOODS', '1763,643').split(',') if g.strip()]
 CYCLE = float(os.environ.get('SHARE_INTAKE_CYCLE', 20))
@@ -279,6 +281,15 @@ def job_complete(apps, state):
                 continue
             if number <= 0:
                 continue
+            # 平台不下发 startNum（实测恒为 0）时，remain = number - currentNum 会把
+            # 「视频历史总分享量」当成已交付，100 条的小单会被这里直接判完成。
+            # 所以 start<=0 一律以本地基线为准；连基线都没有就交给窗口去建，不在守护里盲判。
+            if start <= 0:
+                start = B.get(sn)
+                if start <= 0:
+                    continue
+                if current <= 0:
+                    continue          # 一个执行量都没回写过，谈不上完成
             remain = number - (current - start)
             if remain > LOSE_NUM:
                 continue

@@ -46,6 +46,7 @@ from dy_share import (DevicePool, InfoPool, ShareBooster, SHARE_FIELD,
 from function import FunctionApp, show_message, TIME_WAIT
 import used_store as U
 import pace_ledger as P
+import order_baseline as B
 
 function = FunctionApp()
 
@@ -449,6 +450,17 @@ while True:
                     continue
 
                 current = current_share(order_sn, aweme_id, start_num)
+                # startNum=0 不是「起点是 0」，是这个货号的平台不下发基线（1763/643 实测全 0）。
+                # 拿 0 直接算 净增 = 绝对值 - 0，等于把视频历史总分享量算成本次交付：
+                # 3252608（下 100 条、视频历史 500）第一轮就 100-500=-400 <= 5，40 秒写 4 完成，
+                # 一条都没发。所以这里先补基线：本地台账优先，没有就用此刻的绝对值打基线并回写平台。
+                start_num = B.ensure(order_sn, aweme_id, start_num)
+                if start_num <= 0 and current >= 0:
+                    start_num = B.put(order_sn, aweme_id, current)
+                    if start_num > 0:
+                        function.update_order_progress(order_sn, start_num, start_num)
+                        show_message(f'第 {looper_num} 次 | {order_sn}', '基线落地',
+                                     f'平台 startNum=0 → 本地基线 {start_num}，缺量按本地算')
                 surplus_num = order_num - (current - start_num)
                 if surplus_num <= LOSE_NUM:
                     show_message(f'第 {looper_num} 次 | {order_sn}', '订单完成',

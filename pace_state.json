@@ -43,7 +43,7 @@
   "shape": "linear",
   "head_pct": 1.0,
   "head_min": 10080.0,
-  "head_end": 1795234664.067891,
+  "head_end": 1795238264.067891,
   "delivered": 148,
   "day_log": {
    "2026-11-16": 147,
@@ -61,21 +61,22 @@
    "2026-11-17 10": 0,
    "2026-11-17 11": 0,
    "2026-11-17 12": 0,
-   "2026-11-17 13": 0
+   "2026-11-17 13": 0,
+   "2026-11-17 18": 0
   },
   "per_day": 0,
   "hourly_tol": 1.3,
-  "lag": 85479,
-  "ticks": 229,
+  "lag": 86291,
+  "ticks": 230,
   "created": "2026-11-16 21:53:01",
   "seg_start": 1794881264.067891,
   "seg_base": 148,
   "seg_total": 1000,
   "seg_dur": 345600.0,
-  "head_end_reason": "zero_delta+retry4/6",
-  "head_pause": 1794896649.82999,
-  "head_retries": 4,
-  "last_ts": 1794893170.327957
+  "head_end_reason": "zero_delta+retry5/6",
+  "head_pause": 1794913888.462331,
+  "head_retries": 5,
+  "last_ts": 1794910288.3223667
  },
  "3246295": {
   "order_sn": "3246295",
@@ -115,7 +116,7 @@
   "shape": "linear",
   "head_pct": 1.0,
   "head_min": 10080.0,
-  "head_end": 1795240774.1502743,
+  "head_end": 1795244374.1502743,
   "delivered": 18,
   "day_log": {
    "2026-11-17": 18
@@ -123,21 +124,22 @@
   "hour_log": {
    "2026-11-17 11": 17,
    "2026-11-17 12": 1,
-   "2026-11-17 13": 0
+   "2026-11-17 13": 0,
+   "2026-11-17 18": 0
   },
   "per_day": 0,
   "hourly_tol": 1.3,
-  "lag": 23443,
-  "ticks": 67,
+  "lag": 23885,
+  "ticks": 68,
   "created": "2026-11-17 11:49:34",
   "seg_start": 1794887374.1502743,
   "seg_base": 0,
   "seg_total": 500,
   "seg_dur": 345600.0,
-  "head_end_reason": "zero_delta+retry4/6",
-  "head_pause": 1794896654.004153,
-  "head_retries": 4,
-  "last_ts": 1794893172.8022816
+  "head_end_reason": "zero_delta+retry5/6",
+  "head_pause": 1794913922.7486594,
+  "head_retries": 5,
+  "last_ts": 1794910322.5900958
  },
  "3249467": {
   "order_sn": "3249467",
@@ -201,5 +203,36 @@
   "head_pause": 0.0,
   "head_retries": 0,
   "last_ts": 1794891269.8376837
+ },
+ "3252608": {
+  "order_sn": "3252608",
+  "total": 100,
+  "start_num": 500,
+  "start_ts": 1794910323.904385,
+  "duration": 345600.0,
+  "shape": "linear",
+  "head_pct": 1.0,
+  "head_min": 10080.0,
+  "head_end": 1795255923.904385,
+  "delivered": 98,
+  "day_log": {
+   "2026-11-17": 98
+  },
+  "hour_log": {
+   "2026-11-17 18": 98
+  },
+  "per_day": 0,
+  "hourly_tol": 1.3,
+  "lag": 55,
+  "ticks": 2,
+  "created": "2026-11-17 18:12:03",
+  "seg_start": 1794910323.904385,
+  "seg_base": 0,
+  "seg_total": 100,
+  "seg_dur": 345600.0,
+  "head_end_reason": "roll",
+  "head_pause": 0.0,
+  "head_retries": 0,
+  "last_ts": 1794910468.573677
  }
 }

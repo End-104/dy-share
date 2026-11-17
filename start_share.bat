@@ -64,7 +64,11 @@ rem    SHARE_STALL_PAUSE=900   seconds to pause while waiting for counter settle
 rem    SHARE_STALL_ROUNDS=8    pause rounds before giving up
 rem ============================================================
 
+rem 解释器自适应：优先 .venv312（README 里的规范名），没有就退回 .venv。
+rem 原来写死 .venv312，而这台机器上只有 .venv，脚本直接 exit /b 1，12 个窗口一个都起不来，
+rem 订单却已经在平台上自动接单（守护进程另起），看起来就是「没人刷、单子自己在走」。
 set PY=%~dp0.venv312\Scripts\python.exe
+if not exist "%PY%" set PY=%~dp0.venv\Scripts\python.exe
 if not exist "%PY%" (
     echo [ERROR] python not found: %PY%
     echo rebuild: py -3.12 -m venv .venv312
