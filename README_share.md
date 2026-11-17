@@ -33,9 +33,9 @@
 | `run_1800.bat` | 生产启动器：一套实测口径拉起 `daily1800.py`（1800 目标、边烧边补、收工 23:30） |
 | `video_cap.json` | 已测到的单视频天花板记录（639 / 341 两档，含 attempts / accepted / consecutive_empty） |
 | `_deleted_20261116.zip` | 2026-11-16 清掉的中间实验脚本备份（`bucket_lab` `cap_probe` `share_plan` `window_probe` `share_ceiling_lab` `share_axis_probe` `dy_share_three` `channel_bridge` `smoke_share` 及两个自测脚本），要回看直接解压 |
-| `start.bat` `start_share.bat` | 分享量接单窗口：`start.bat` 为总入口，`start_share.bat` 实际拉起 12 个进程；`start.bat dry` 为演练 |
+| `start.bat` `start_share.bat` | 分享量接单窗口：`start.bat` 为总入口，`start_share.bat` 实际拉起 30 个进程（1594 × 15 个窗口用 1–15 页 + 997 × 15 个窗口用 16–30 页，每页 24 线程 = 720 个并发位）；两组窗口数对称，页号在全队内不重复；`start.bat dry` 为演练 |
 | `cfg_qw_dy_share_1594.json` | 分享订单端配置，`goods_sn = 1594`，`video_day_cap = 1200`（单视频每日 1200 条） |
-| `cfg_qw_dy_share_997.json` | 分享订单端配置，`goods_sn = 997`，`video_day_cap = 0`（不限量） |
+| `cfg_qw_dy_share_997.json` | 分享订单端配置，`goods_sn = 997`，`video_day_cap = 1200`（单视频每日 1200 条，与 1594 同口径） |
 | `cfg_qw_dy_share.json` | 老的无后缀配置，`goods_sn = 1594`，`video_day_cap = 1200`；`function.py` 收到裸名时退到它 |
 | `.venv312/` | 现场新建的可用虚拟环境（原 `.venv` 指向另一台机器的 Python311，已失效） |
 
@@ -236,21 +236,41 @@ python applog_replay.py --target "https://v.douyin.com/xxxx/" --count 300 --thre
 
 配置里没写 `video_day_cap` 的退回 `SHARE_DAY_CAP` 环境变量（`start_share.bat` 里 100000，等于不设限）。
 
-单进程 = 一个货号 + 一页订单。十二个进程（两货号 × 六页）覆盖全部待处理单，单视频满额靠台账卡口 + 轮转调度：
+单进程 = 一个货号 + 一页订单。三十个进程（1594 × 15 页 + 997 × 15 页，每页 24 线程 = 720 个并发位）覆盖全部待处理单，两组窗口数对称、页号在全队内不重复（1594 用 1–15，997 用 16–30），单视频满额靠台账卡口 + 轮转调度：
 
 ```bash
+# 1594 组：页 1–15
 python ayk_dy_share_handler.py cfg_qw_dy_share_1594 1 24
 python ayk_dy_share_handler.py cfg_qw_dy_share_1594 2 24
 python ayk_dy_share_handler.py cfg_qw_dy_share_1594 3 24
 python ayk_dy_share_handler.py cfg_qw_dy_share_1594 4 24
 python ayk_dy_share_handler.py cfg_qw_dy_share_1594 5 24
 python ayk_dy_share_handler.py cfg_qw_dy_share_1594 6 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_997  1 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_997  2 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_997  3 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_997  4 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_997  5 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_997  6 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 7 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 8 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 9 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 10 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 11 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 12 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 13 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 14 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 15 24
+# 997 组：页 16–30（从 16 起是为了页号不撞，不是 997 有 30 页单）
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 16 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 17 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 18 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 19 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 20 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 21 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 22 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 23 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 24 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 25 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 26 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 27 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 28 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 29 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 30 24
 ```
 
 第三个参数是每单线程数（省略默认 20），第四个参数写 `dry` 进演练模式。
@@ -297,7 +317,7 @@ python _share_flow_selftest.py
 `https://v.douyin.com/Nieiq-aw6To/` → `7687951780465923904`，`share_count = 8`；
 设备池 1688 台全活；三方 `execState` 返回 `2`、`execNum` 返回 `0`。
 
-**2026-11-17 换号 + 换凭证**：货号 1763 → 1594（`video_day_cap = 1200`），643 → 997（`video_day_cap = 0`，不限），
+**2026-11-17 换号 + 换凭证**：货号 1763 → 1594（`video_day_cap = 1200`），643 → 997（`video_day_cap = 1200`，与 1594 同口径），
 两个货号共用同一对新凭证（`AppId = t6OXRAsRYZRuy_9K-QVZQWx1jWHA1Mt0`），
 `cfg_qw_dy_share_1763.json` / `cfg_qw_dy_share_643.json` 已删除，老的无后缀配置改为挂 1594。
 
@@ -351,7 +371,7 @@ python share_queue.py                    # 正式跑，结果回写同一文件
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `SHARE_DAY_CAP` | `1800` | 单视频每自然日入账上限；`0` = 不限（只剩设备池约束） |
-| `SHARE_DEVICE_GAP` | `300` | 同一台设备两次分享的最小间隔（秒）；不设会几秒内连派几十条，被判机器 |
+| `SHARE_DEVICE_GAP` | `90` | 同一台设备两次分享的最小间隔（秒）。设备池实测 7941 台（`devices34` 1688 + `pool_extra` 6253 去重）÷ 90s = 88 请求/秒上限；30 窗口的需求约 67 请求/秒（180 条 ÷ 230s × 30 ÷ 计入率 35%），计入率掉到 28% 时需求 84 请求/秒，仍在 88 以内。设 `0` 会让 `_pick()` 走无间隔分支，几秒内对同一台设备连派几十条，必被判机器 |
 | `SHARE_ROUND_CHUNK` | `180` | 单轮最多吃多少条，吃完回队尾；`0` = 一轮吃满目标 |
 | `SHARE_ZERO_ROUNDS` | `4` | 零增量退避重试轮数，超了才退款 |
 | `SHARE_STALL_PAUSE` | `90` | 计数停滞时暂停发请求、等落账的秒数 |

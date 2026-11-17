@@ -23,6 +23,7 @@ import concurrent.futures as futures
 import fnmatch
 import json
 import os
+import random
 import sys
 import time
 import urllib.error
@@ -105,6 +106,14 @@ class GitHub:
                     last_err = (e.code, detail)
                     time.sleep(2 + attempt * 3)
                     continue
+                # 403/429 = 二次限速：GitHub 要求等几分钟，按指数退避重试而不是直接失败
+                if e.code in (403, 429):
+                    msg = json.dumps(detail)
+                    if e.code == 429 or 'rate limit' in msg.lower() or 'abuse' in msg.lower():
+                        last_err = (e.code, detail)
+                        wait = min(60, 15 * (attempt + 1))
+                        time.sleep(wait)
+                        continue
                 return e.code, detail
             except Exception as e:  # 网络层
                 last_err = ("net", str(e))
@@ -116,7 +125,7 @@ def make_blob(gh, owner, repo, abs_path):
     with open(abs_path, "rb") as f:
         data = f.read()
     payload = {"content": base64.b64encode(data).decode("ascii"), "encoding": "base64"}
-    status, resp = gh.call("POST", f"/repos/{owner}/{repo}/git/blobs", payload)
+    status, resp = gh.call("POST", f"/repos/{owner}/{repo}/git/blobs", payload, retries=8)
     if status not in (200, 201):
         raise RuntimeError(f"blob 失败 {status}: {resp}")
     return resp["sha"]
@@ -200,11 +209,12 @@ def main():
 
     def worker(item):
         abs_path, rel, size = item
+        time.sleep(random.uniform(0.05, 0.25))
         sha = make_blob(gh, args.owner, args.repo, abs_path)
         return {"path": rel, "mode": "100644", "type": "blob", "sha": sha}, size
 
     done = 0
-    with futures.ThreadPoolExecutor(max_workers=8) as pool:
+    with futures.ThreadPoolExecutor(max_workers=4) as pool:
         tasks = {pool.submit(worker, it): it for it in ok}
         for fut in futures.as_completed(tasks):
             item = tasks[fut]

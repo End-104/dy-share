@@ -32,8 +32,10 @@
     第二天零点自动重置，同一条视频按当天口径重新计额度，不需要人工清库。
 
 多单并发时的调度口径（保证每个用户都能吃满自己的额度）：
-    · SHARE_ROUND_CHUNK=400  每轮只吃 400 条就回队尾，避免前几单占满设备
-    · SHARE_DEVICE_GAP=300   同一台设备两次分享最小间隔，防止被服务端判机器
+    · SHARE_ROUND_CHUNK=180  每轮只吃 180 条就回队尾，避免前几单占满设备
+    · SHARE_DEVICE_GAP=90    同一台设备两次分享最小间隔（代码缺省 300，launcher 设 90）。
+                             设备池实测 7941 台 ÷ 90s = 88 请求/秒上限，30 个窗口
+                             × 180 条 ÷ 230s 一轮 ÷ 计入率 35% ≈ 67 请求/秒需求，尚有余量。
     · SHARE_ZERO_ROUNDS=4    零增量最多退避重试 4 轮（600/1200/2400/3600s）才退款
 """
 
@@ -58,7 +60,7 @@ LOSE_NUM = 5                # 余量：分享按真实增量结算，留 5 条�
 THREADS = int(sys.argv[3]) if len(sys.argv) > 3 and str(sys.argv[3]).isdigit() else 20
 # 每单每轮最长耗时（秒）。原来是 2400，给「1800 条满额单一次吃完」留的余量；
 # 现在节奏层不再限速，一轮吃到视频桶关窗或吃满本批 180 条就自然退出，
-# 2400 秒只会让一条单占住一个窗口四十分钟，其余 11 个窗口排在同一单后面干等。
+# 2400 秒只会让一条单占住一个窗口四十分钟，其余 29 个窗口排在同一单后面干等。
 BUDGET = int(os.environ.get('SHARE_BUDGET', 60 * 20))
 CHANNELS = ('1128', '32')   # 实测能承载 share_delta 的两条 Android 通道
 # ---- 交付口径：客户下多少就刷多少，今天不齐明天接着刷
@@ -97,7 +99,7 @@ def cap_text(day_cap: int) -> str:
 
 # ---- 订单级互斥：一条单子同一时刻只允许一个窗口发上报
 # 三方接口的 execState 不是会话语义：execute 拿回来的 1 只代表「这一次领取」，
-# 下一秒再查又回 2。12 个窗口因此会同时对着同一条单子各发一批，实测把 800 条
+# 下一秒再查又回 2。30 个窗口因此会同时对着同一条单子各发一批，实测把 800 条
 # 的单子刷到 1100（超交 300，等于白送）。平台侧没有可用的订单锁，只能在本机做：
 # 谁抢到 order_<sn>.lock 谁刷，抢不到的直接跳过，等下一圈再抢。
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -201,6 +203,36 @@ def release_order(order_sn):
             pass
 
 
+def order_busy(order_sn):
+    """只读探测这单是不是别的窗口正在刷。True 表示本窗口本轮不用管它。
+
+    为什么要这一步：30 个窗口下，任何一页里剩下的单基本都在被别人刷。
+    老流程是「先打详情接口 → 再看平台 execState → 再抢本机锁」，前两步都是
+    HTTP 往返，两条全白打才轮到本机锁发现「窗口忙」。本机锁文件读一次只要
+    几百微秒，所以先在本地判一次，能把这部分空转请求整段砍掉。
+    注意这里只读不抢：抢锁仍然是 claim_order 的事，判活/过期口径必须一致，
+    否则会出现「本地判忙跳过」和「锁已过期可抢」两套结论打架。
+    """
+    path = _lock_path(order_sn)
+    try:
+        with open(path, encoding='utf-8') as f:
+            parts = f.read().split()
+    except Exception:
+        return False                      # 没锁文件 = 没人刷，正常往下走
+    holder = parts[0] if parts else ''
+    try:
+        ts = float(parts[1]) if len(parts) > 1 else os.path.getmtime(path)
+    except Exception:
+        ts = time.time()
+    if holder == str(os.getpid()):
+        return False                      # 自己的锁：上一轮漏放，照常进去续用
+    if not holder:
+        return False
+    if not _pid_alive(holder):
+        return False                      # 持锁窗口已经没了，claim_order 会清掉它
+    return (time.time() - ts) <= ORDER_LOCK_TTL
+
+
 def ceiling_hit(aweme_id: str, result: dict, day_cap: int = None) -> bool:
     """今天进过量、这轮零增量、本地额度还没满、且今天已经吃到接近抖音日顶——四条同时成立才算平台天花板。
 
@@ -302,7 +334,7 @@ def goods_day_cap(goods: str) -> int:
 
 
 # 每个货号一份日限，进程启动时读一次：配置文件在运行期不会被改，
-# 而每张单都去开文件读盘没必要（一台机器 12 个窗口 × 每秒十几单）。
+# 而每张单都去开文件读盘没必要（一台机器 30 个窗口 × 每秒十几单）。
 DAY_CAP_BY_GOODS = {g: goods_day_cap(g) for g in GOODS_LIST}
 
 # 设备池全进程共用：冷却状态跨订单保持，避免同一台设备在相邻订单里被连点
@@ -379,7 +411,7 @@ def current_share(order_sn: str, aweme_id: str, start_num: int) -> int:
 # 接单只是把 1 写成 2，不动数量、不动金额、不回写任何执行数据，剩下的全交给缺量循环。
 AUTO_ACCEPT = str(os.environ.get('SHARE_AUTO_ACCEPT', '1')).lower() not in ('0', 'false', 'no', 'off')
 # 每圈最多接几张：一次把几百张全置 2，会让所有窗口同时去抢同一批单的锁，
-# 抢不到的原地空转；30 张一批，够 12 个窗口分工，也不会把列表撑爆。
+# 抢不到的原地空转；30 张一批，够 30 个窗口分工，也不会把列表撑爆。
 INTAKE_MAX = int(os.environ.get('SHARE_INTAKE_MAX', 30))
 
 
@@ -437,7 +469,11 @@ while True:
             last_list_n = len(order_list)
             last_list_ts = time.time()
         if len(order_list) == 0:
-            page = int(time.time() * 1000) % 10
+            # 30 个窗口各自错开一位：以前固定 %10，空页的十几个窗口同时砸在同
+            # 一个随机页上，撞单率 100%，日志里全是「窗口忙」。
+            # 错开之后同一页最多撞 ceil(30/10)=3 个窗口，抢锁有先后、有活干。
+            _win = int(function.page) if str(function.page).isdigit() else 1
+            page = (int(time.time() * 1000) // 1000 + _win) % 10
             for _goods in GOODS_LIST:
                 _part = function.get_order_handler(page, goods_sn=_goods)
                 if _part:
@@ -474,6 +510,16 @@ while True:
                     continue
                 # 曲线还没走到这条单的额度：跳过，别空转
                 if pace_skip.get(order_sn, 0) > time.time():
+                    continue
+                # 本机锁前置判忙：省掉详情接口和平台 execState 两次往返。
+                # 30 个窗口时空页窗口回落到 0-9 随机页，捞到的单九成都在别人手里，
+                # 判忙放在最前面，一个空转窗口一圈的平台请求从 2N 降到 0。
+                if not DRY and order_busy(order_sn):
+                    if (time.time() - skip_log_ts.get(order_sn, 0)) >= SKIP_LOG_EVERY:
+                        skip_log_ts[order_sn] = time.time()
+                        show_message(f'第 {looper_num} 次 | {order_sn}', '窗口忙',
+                                     '另一个窗口持锁中，未查详情直接跳过')
+                    del order
                     continue
 
                 # ---- 演练：只解析链接试打，不抢锁、不回写、不改状态
@@ -596,10 +642,10 @@ while True:
                     del order
                     continue
                 # 抢本机订单锁：抢不到说明另一个窗口正在刷这单，直接跳过。
-                # 为什么必须在本机锁：12 个窗口都会拿到同一个 execState=2，
+                # 为什么必须在本机锁：30 个窗口都会拿到同一个 execState=2，
                 # 各算一次缺量各发一批，缺量是各算各的，超出来的量没人负责。
                 if not claim_order(order_sn):
-                    # 同一条单在 24 个窗口里被跳过是常态，按单节流，不然日志全是这行
+                    # 同一条单在 30 个窗口里被跳过是常态，按单节流，不然日志全是这行
                     if (time.time() - skip_log_ts.get(order_sn, 0)) >= SKIP_LOG_EVERY:
                         skip_log_ts[order_sn] = time.time()
                         show_message(f'第 {looper_num} 次 | {order_sn}', '窗口忙',
