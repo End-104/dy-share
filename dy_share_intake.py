@@ -41,7 +41,7 @@ ONCE = str(os.environ.get('SHARE_INTAKE_ONCE', '0')).lower() not in ('0', 'false
 DRY = str(os.environ.get('SHARE_INTAKE_DRY', '0')).lower() not in ('0', 'false', 'no', 'off')
 STATE_FILE = os.path.join(BASE, 'intake_state.json')
 LOCK_FILE = os.path.join(BASE, 'intake.lock')
-CODE_VERSION = '2026-11-17.3'   # 与 ayk_dy_share_handler.py 同号，服务器上跑的是哪份一看就知道
+CODE_VERSION = '2026-11-17.4'   # 与 ayk_dy_share_handler.py 同号，服务器上跑的是哪份一看就知道
 
 
 def show(tag, msg, content=''):
@@ -259,6 +259,56 @@ def _locked(order_sn):
 
 
 # ---------------------------------------------------------------- 三个作业
+def snapshot_baseline(app, order):
+    """接单瞬间给平台补一个非零基线，返回一句人话说明补没补上。
+
+    为什么要在接单这一步就补：平台对 1763 / 643 从不下发 startNum（恒为 0），
+    而窗口判完成用的是 净增 = 真实分享量 - startNum。startNum 是 0 时，
+    净增直接等于视频的历史总分享量：一条被刷到 698 的视频，任何 100 条的单
+    第一圈就会算出 100 - 698 < 0，几秒内被写成完成，一条都没发 ——
+    3253143 / 3253177 就是这么没的。
+    在接单时把真实分享量同时写成 startNum 和 currentNum，平台侧的基线就不再是 0，
+    此后无论哪个版本、哪台机器的窗口来跑，缺量都算得对：旧副本也算不出负数。
+    """
+    sn = str(order.get('orderSN') or '')
+    try:
+        if int(order.get('startNum') or 0) > 0:
+            return '平台已有基线 {}'.format(order.get('startNum'))
+    except Exception:
+        pass
+    base = 0
+    try:
+        base = B.get(sn)
+    except Exception:
+        base = 0
+    if base > 0:
+        app.progress(sn, base, base)
+        return '本地基线 {} 已回写平台'.format(base)
+    link = ''
+    for p in order.get('params') or []:
+        v = str(p.get('value') or '')
+        if 'douyin.com' in v or (v.isdigit() and len(v) >= 15):
+            link = v
+            break
+    if not link:
+        return '无作品链接，基线留给窗口建'
+    try:
+        import dy_share as D          # 延迟导入：只在真要读计数时才付设备池的启动开销
+        aweme_id = D.resolve_aweme_id(link)
+        if not aweme_id:
+            return '作品ID解析失败，基线留给窗口建'
+        cur = D.share_count(aweme_id)
+    except Exception as exc:
+        return '基线快照异常 {}，留给窗口建'.format(exc)
+    if cur <= 0:
+        return '分享量读取失败({})，基线留给窗口建'.format(cur)
+    base = B.put(sn, aweme_id, cur)
+    if base <= 0:
+        return '基线台账写入失败，留给窗口建'
+    app.progress(sn, base, base)
+    return '基线快照 {} / {} 已写平台'.format(base, aweme_id)
+
+
 def job_accept(apps, state):
     """已付款(1) → 处理中(2)。客户付完款最迟一个周期开工。"""
     done = 0
@@ -269,8 +319,11 @@ def job_accept(apps, state):
                 continue
             msg = app.set_state(sn, 2, '自动接单')
             done += 1
-            show(sn, '自动接单', '货号 {} | 下单 {} 条 | {}'.format(
-                app.goods, order.get('number'), msg))
+            # 接完就补基线，别等窗口：窗口起不来、跑的是旧副本、或者被锁挡住时，
+            # 平台侧就会一直挂着 startNum=0，那一单随时可能被任何一条分支判成完成。
+            note = snapshot_baseline(app, order)
+            show(sn, '自动接单', '货号 {} | 下单 {} 条 | {} | {}'.format(
+                app.goods, order.get('number'), msg, note))
     return done
 
 

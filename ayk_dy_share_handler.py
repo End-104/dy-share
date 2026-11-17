@@ -50,7 +50,7 @@ import order_baseline as B
 
 function = FunctionApp()
 
-CODE_VERSION = '2026-11-17.3'   # 每次改动代码都要动这个号，窗口一开就能看出跑的是哪一份
+CODE_VERSION = '2026-11-17.4'   # 每次改动代码都要动这个号，窗口一开就能看出跑的是哪一份
 LOSE_NUM = 5                # 余量：分享按真实增量结算，留 5 条收口，留大等于白刷
 THREADS = int(sys.argv[3]) if len(sys.argv) > 3 and str(sys.argv[3]).isdigit() else 20
 # 每单每轮最长耗时（秒）。原来是 2400，给「1800 条满额单一次吃完」留的余量；
