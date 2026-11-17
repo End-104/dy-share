@@ -14,7 +14,7 @@ rem ============================================================
 rem Delivery policy: fulfill what the customer ordered; spill over to next day.
 rem Per-goods daily cap now lives in cfg_qw_dy_share_<goods>.json -> video_day_cap:
 rem   goods 1594 = 1200  (max 1200 credited per video per natural day)
-rem   goods 997  = 0     (unlimited, every cap check inside the booster is skipped)
+rem   goods 997  = 1200  (same ruler as 1594 since 2026-11-17)
 rem SHARE_DAY_CAP below is only the fallback when a cfg has no video_day_cap key.
 set SHARE_DAY_CAP=100000
 rem Both goods are share-count products; every window eats both, no idle windows.
@@ -29,14 +29,17 @@ set SHARE_ZERO_BACKOFF=150
 rem Re-open interval after a sprint got interrupted by zero delta, in seconds.
 set SHARE_PACE_HEAD_RETRY=120
 rem No refund on this side: backoff and retry, carry the rest to next day.
-set SHARE_STALL_PAUSE=900
-set SHARE_STALL_ROUNDS=8
+rem Ceiling round length: send ~20s + stall judge 90s + pause 30s x 2 + settle 60s = ~230s.
+rem Was 900 x 8, which always ran into SHARE_BUDGET and cost a flat 20 min per round.
+set SHARE_STALL_PAUSE=30
+set SHARE_STALL_ROUNDS=2
 rem Pacing: 96h delivery window, sprint takes the whole remainder, head 10080 min.
 set SHARE_PACE_HOURS=96
 set SHARE_PACE_HEAD_PCT=1.0
 set SHARE_PACE_HEAD_MIN=10080
-rem One round at most 1200s: close the window on bucket cap and free the devices.
-set SHARE_BUDGET=1200
+rem One round at most 300s: a normal round needs ~25s (180 / 14 per sec), so this is a
+rem hard stop only for the drain-and-wait path, not a throughput cap.
+set SHARE_BUDGET=300
 rem Auto accept belongs to the resident daemon dy_share_intake.py, not the windows.
 rem Each window only pulls its own page (page=argv[2], limit=24); 12 windows each
 rem scanning one page of state=2 leaks orders past 24, and a window stuck inside
@@ -57,7 +60,7 @@ set SHARE_CONFIRM_GAP=2
 
 rem ============================================================
 rem  Share-count intake end (own venv: .venv312)
-rem  goods 1594: 6 pages (cfg video_day_cap=1200) | goods 997: 6 pages (no cap)
+rem  goods 1594: 6 pages (cfg video_day_cap=1200) | goods 997: 6 pages (cfg 1200)
 rem  24 threads per order
 rem  usage:
 rem    start_share.bat         normal intake
@@ -96,7 +99,7 @@ start "share-1594-p4" cmd /k "chcp 65001>nul && cd /d %~dp0 && %PY% ayk_dy_share
 start "share-1594-p5" cmd /k "chcp 65001>nul && cd /d %~dp0 && %PY% ayk_dy_share_handler.py cfg_qw_dy_share_1594 5 24 %MODE%"
 start "share-1594-p6" cmd /k "chcp 65001>nul && cd /d %~dp0 && %PY% ayk_dy_share_handler.py cfg_qw_dy_share_1594 6 24 %MODE%"
 
-rem ---- goods 997 (cfg video_day_cap=0, unlimited) ----
+rem ---- goods 997 (cfg video_day_cap=1200, same as 1594) ----
 start "share-997-p1" cmd /k "chcp 65001>nul && cd /d %~dp0 && %PY% ayk_dy_share_handler.py cfg_qw_dy_share_997 1 24 %MODE%"
 start "share-997-p2" cmd /k "chcp 65001>nul && cd /d %~dp0 && %PY% ayk_dy_share_handler.py cfg_qw_dy_share_997 2 24 %MODE%"
 start "share-997-p3" cmd /k "chcp 65001>nul && cd /d %~dp0 && %PY% ayk_dy_share_handler.py cfg_qw_dy_share_997 3 24 %MODE%"
@@ -104,6 +107,6 @@ start "share-997-p4" cmd /k "chcp 65001>nul && cd /d %~dp0 && %PY% ayk_dy_share_
 start "share-997-p5" cmd /k "chcp 65001>nul && cd /d %~dp0 && %PY% ayk_dy_share_handler.py cfg_qw_dy_share_997 5 24 %MODE%"
 start "share-997-p6" cmd /k "chcp 65001>nul && cd /d %~dp0 && %PY% ayk_dy_share_handler.py cfg_qw_dy_share_997 6 24 %MODE%"
 
-echo 12 intake windows launched: 1594 x6 pages (cap 1200/video/day), 997 x6 pages (no cap), 24 threads each.
+echo 12 intake windows launched: 1594 x6 pages (cap 1200/video/day), 997 x6 pages (cap 1200), 24 threads each.
 echo 1 state daemon launched: share-intake (accept 1-^>2 / revive 3-^>2 / finish 2-^>4), %SHARE_INTAKE_CYCLE%s per round.
 echo per-goods video day cap comes from cfg video_day_cap; fallback SHARE_DAY_CAP=%SHARE_DAY_CAP%, device gap %SHARE_DEVICE_GAP%s, chunk %SHARE_ROUND_CHUNK%.
