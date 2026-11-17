@@ -1,0 +1,64 @@
+{"event": "start", "aweme_id": "7693857502727274422", "target": 1800, "baseline": 562, "credited": 221, "opts": {"threads": 24, "chunk": 180, "gap": 900, "gap_max": 3600, "stop_at": "22:52", "probe_only": true, "probe_n": 4, "day_cap": 1800}, "ts": "2026-11-15 22:32:01"}
+{"event": "probe", "aweme_id": "7693857502727274422", "alive": false, "delta": 0, "accepted": 0, "closed_streak": 0, "ts": "2026-11-15 22:32:56"}
+{"event": "probe", "aweme_id": "7693857502727274422", "alive": false, "delta": 0, "accepted": 0, "closed_streak": 1, "ts": "2026-11-15 22:48:51"}
+{"event": "finish", "aweme_id": "7693857502727274422", "day": "2026-11-15", "target": 1800, "baseline": 562, "final": 562, "real_delta": 0, "credited": 221, "windows": 0, "rounds": 2, "time": "22:52:00", "ts": "2026-11-15 22:52:00"}
+{"event": "start", "aweme_id": "7693857502727274422", "target": 1800, "baseline": 562, "credited": 221, "opts": {"threads": 24, "chunk": 180, "gap": 60, "gap_max": 3600, "stop_at": "23:14", "probe_only": true, "probe_n": 1, "day_cap": 1800, "channels": ["1128", "32"]}, "ts": "2026-11-15 22:55:11"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-15 22:55:58"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "info pool empty", "ts": "2026-11-15 22:55:59"}
+{"event": "start", "aweme_id": "7693857502727274422", "target": 1800, "baseline": 562, "credited": 221, "opts": {"threads": 24, "chunk": 180, "gap": 60, "gap_max": 3600, "stop_at": "23:21", "probe_only": true, "probe_n": 1, "day_cap": 1800, "channels": ["1128", "32"]}, "ts": "2026-11-15 22:57:56"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-15 22:58:43"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "info pool empty", "ts": "2026-11-15 22:58:44"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-15 23:02:04"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-15 23:06:55"}
+{"event": "mint", "minted": 600, "infos": 600, "sec": 0.1, "rate": null, "aborted": null, "total_today": 600, "ts": "2026-11-15 23:11:27"}
+{"event": "mint", "minted": 600, "infos": 600, "sec": 0.1, "rate": null, "aborted": null, "total_today": 1200, "ts": "2026-11-15 23:11:27"}
+{"event": "mint", "minted": 500, "infos": 500, "sec": 0.1, "rate": null, "aborted": null, "total_today": 1700, "ts": "2026-11-15 23:11:27"}
+{"event": "mint", "minted": 100, "infos": 100, "sec": 0.1, "rate": null, "aborted": null, "total_today": 100, "ts": "2026-11-15 23:11:27"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-15 23:14:13"}
+{"event": "finish", "aweme_id": "7693857502727274422", "day": "2026-11-15", "target": 1800, "baseline": 562, "final": 562, "real_delta": 0, "credited": 221, "rounds": 8, "chan": {"1128": {"windows": 0, "accepted": 0, "closed": 5}, "32": {"windows": 0, "accepted": 0, "closed": 2}}, "time": "23:21:00", "ts": "2026-11-15 23:21:00"}
+{"event": "start", "aweme_id": "7706079479723465882", "target": 1800, "baseline": 335, "credited": 70, "opts": {"threads": 24, "chunk": 180, "gap": 900, "gap_max": 3600, "stop_at": "00:00", "probe_only": false, "probe_n": 4, "day_cap": 1800, "channels": ["1128", "32"], "mint_batch": 400, "mint_max": 12000, "mint_threads": 2, "mint_pace": 1.0, "mint_pause": 5.0, "mint_streak": 8, "prefer_minted": true, "auto_mint": true}, "ts": "2026-11-15 23:54:42"}
+{"event": "finish", "aweme_id": "7706079479723465882", "day": "2026-11-15", "target": 1800, "baseline": 335, "final": 335, "real_delta": 0, "credited": 70, "rounds": 0, "chan": {"1128": {"windows": 0, "accepted": 0, "closed": 0}, "32": {"windows": 0, "accepted": 0, "closed": 0}}, "time": "23:54:43", "ts": "2026-11-15 23:54:43"}
+{"event": "start", "aweme_id": "7688278039562908130", "target": 6000, "baseline": 5, "credited": 0, "opts": {"threads": 24, "chunk": 180, "gap": 240, "gap_max": 1800, "stop_at": "23:30", "probe_only": false, "probe_n": 4, "day_cap": 6000, "channels": ["1128", "32"], "mint_batch": 400, "mint_max": 12000, "mint_threads": 2, "mint_pace": 1.0, "mint_pause": 5.0, "mint_streak": 8, "prefer_minted": true, "auto_mint": true}, "ts": "2026-11-16 16:13:43"}
+{"event": "probe", "channel": "1128", "alive": true, "delta": 4, "accepted": 4, "note": "{\"status_code\":0,\"extra\":{\"now\":17948168", "ts": "2026-11-16 16:14:35"}
+{"event": "start", "aweme_id": "7688278039562908130", "target": 6000, "baseline": 5, "credited": 4, "opts": {"threads": 24, "chunk": 180, "gap": 240, "gap_max": 1800, "stop_at": "23:30", "probe_only": false, "probe_n": 4, "day_cap": 6000, "channels": ["1128", "32"], "mint_batch": 400, "mint_max": 12000, "mint_threads": 2, "mint_pace": 1.0, "mint_pause": 5.0, "mint_streak": 8, "prefer_minted": true, "auto_mint": true}, "ts": "2026-11-16 16:16:09"}
+{"event": "probe", "channel": "1128", "alive": true, "delta": 4, "accepted": 4, "note": "{\"status_code\":0,\"extra\":{\"now\":17948169", "ts": "2026-11-16 16:17:01"}
+{"event": "burst", "channel": "1128", "chunk": 180, "accepted": 180, "attempts": 180, "gained": 180, "credited": 368, "throttled": false, "reason": "", "ts": "2026-11-16 16:17:44"}
+{"event": "probe", "channel": "32", "alive": true, "delta": 4, "accepted": 4, "note": "{\"extra\":{\"now\":1794817068000,\"fatal_ite", "ts": "2026-11-16 16:18:36"}
+{"event": "burst", "channel": "32", "chunk": 180, "accepted": 180, "attempts": 180, "gained": 180, "credited": 732, "throttled": false, "reason": "", "ts": "2026-11-16 16:19:20"}
+{"event": "probe", "channel": "1128", "alive": true, "delta": 4, "accepted": 4, "note": "{\"log_pb\":{\"impr_id\":\"20261116161924ADB9", "ts": "2026-11-16 16:20:12"}
+{"event": "burst", "channel": "1128", "chunk": 180, "accepted": 180, "attempts": 180, "gained": 180, "credited": 1096, "throttled": false, "reason": "", "ts": "2026-11-16 16:20:55"}
+{"event": "probe", "channel": "32", "alive": true, "delta": 4, "accepted": 4, "note": "{\"status_code\":0,\"err_item_ids\":\"\",\"succ", "ts": "2026-11-16 16:21:46"}
+{"event": "burst", "channel": "32", "chunk": 180, "accepted": 180, "attempts": 180, "gained": 180, "credited": 1460, "throttled": false, "reason": "", "ts": "2026-11-16 16:22:30"}
+{"event": "probe", "channel": "1128", "alive": true, "delta": 4, "accepted": 4, "note": "{\"status_code\":0,\"extra\":{\"now\":17948173", "ts": "2026-11-16 16:23:21"}
+{"event": "burst", "channel": "1128", "chunk": 180, "accepted": 180, "attempts": 180, "gained": 180, "credited": 1824, "throttled": false, "reason": "", "ts": "2026-11-16 16:24:05"}
+{"event": "probe", "channel": "32", "alive": true, "delta": 4, "accepted": 4, "note": "{\"success_item_ids\":\"7534358442764019911", "ts": "2026-11-16 16:24:57"}
+{"event": "burst", "channel": "32", "chunk": 180, "accepted": 180, "attempts": 180, "gained": 180, "credited": 2188, "throttled": false, "reason": "", "ts": "2026-11-16 16:25:40"}
+{"event": "probe", "channel": "1128", "alive": true, "delta": 4, "accepted": 4, "note": "{\"status_code\":0,\"extra\":{\"now\":17948175", "ts": "2026-11-16 16:26:32"}
+{"event": "burst", "channel": "1128", "chunk": 180, "accepted": 40, "attempts": 57, "gained": 40, "credited": 2272, "throttled": true, "reason": "全部通道桶已关：1128 最晚 120s 后重探", "ts": "2026-11-16 16:27:25"}
+{"event": "probe", "channel": "32", "alive": true, "delta": 4, "accepted": 4, "note": "{\"log_pb\":{\"impr_id\":\"202611161627292854", "ts": "2026-11-16 16:28:17"}
+{"event": "burst", "channel": "32", "chunk": 180, "accepted": 17, "attempts": 24, "gained": 17, "credited": 2310, "throttled": true, "reason": "全部通道桶已关：32 最晚 120s 后重探", "ts": "2026-11-16 16:29:05"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 16:29:57"}
+{"event": "probe", "channel": "32", "alive": true, "delta": 3, "accepted": 3, "note": "{\"status_code\":0,\"err_item_ids\":\"\",\"succ", "ts": "2026-11-16 16:31:57"}
+{"event": "burst", "channel": "32", "chunk": 180, "accepted": 14, "attempts": 24, "gained": 14, "credited": 2341, "throttled": true, "reason": "全部通道桶已关：32 最晚 119s 后重探", "ts": "2026-11-16 16:32:46"}
+{"event": "probe", "channel": "32", "alive": true, "delta": 1, "accepted": 1, "note": "{\"status_code\":0,\"err_item_ids\":\"\",\"succ", "ts": "2026-11-16 16:35:39"}
+{"event": "burst", "channel": "32", "chunk": 180, "accepted": 9, "attempts": 24, "gained": 9, "credited": 2360, "throttled": true, "reason": "全部通道桶已关：32 最晚 192s 后重探", "ts": "2026-11-16 16:36:31"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 16:37:24"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 16:39:24"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 16:46:41"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 16:48:30"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 16:57:48"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 17:05:45"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 17:15:02"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 17:32:49"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 17:42:06"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 18:03:41"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 18:12:59"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 18:34:34"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 18:43:52"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 19:05:27"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 19:14:45"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 19:36:20"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 19:45:38"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 20:07:12"}
+{"event": "probe", "channel": "32", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 20:16:30"}
+{"event": "probe", "channel": "1128", "alive": false, "delta": 0, "accepted": 0, "note": "throttled:video", "ts": "2026-11-16 20:38:05"}

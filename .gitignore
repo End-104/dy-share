@@ -1,0 +1,34 @@
+# 虚拟环境与缓存，体积大且可由 requirements.txt 重建
+.venv312/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# IDE 与本地临时文件
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+desktop.ini
+
+# 历史备份包
+_deleted_*.zip
+*.7z
+
+# 推送脚本运行时的本地令牌缓存与日志
+.github_token
+push.log
+*.log
+
+# 远端校验的一次性脚本
+_verify_remote.py
+
+# 一次性探针脚本：内嵌 app_id/app_secret，只在本地使用
+_peek_*.py
+_set_state.py
+
+# SQLite 运行时日志
+*.db-wal
+*.db-shm
+*.db-journal

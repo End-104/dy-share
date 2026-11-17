@@ -1,0 +1,76 @@
+{
+ "7693857502727274422": {
+  "day": "2026-11-15",
+  "windows": 0,
+  "rounds": 8,
+  "credited": 0,
+  "baseline": 562,
+  "started": "22:32:01",
+  "chan": {
+   "1128": {
+    "windows": 0,
+    "accepted": 0,
+    "closed": 5,
+    "gap": 624,
+    "next": 1794756277.1006224
+   },
+   "32": {
+    "windows": 0,
+    "accepted": 0,
+    "closed": 2,
+    "gap": 96,
+    "next": 1794756060.0,
+    "exhausted": true
+   }
+  }
+ },
+ "7706079479723465882": {
+  "day": "2026-11-15",
+  "baseline": 335,
+  "started": "23:54:42",
+  "credited": 0,
+  "rounds": 0,
+  "minted": 0,
+  "chan": {
+   "1128": {
+    "windows": 0,
+    "accepted": 0,
+    "closed": 0,
+    "gap": 900,
+    "next": 0.0
+   },
+   "32": {
+    "windows": 0,
+    "accepted": 0,
+    "closed": 0,
+    "gap": 900,
+    "next": 0.0
+   }
+  }
+ },
+ "7688278039562908130": {
+  "day": "2026-11-16",
+  "baseline": 5,
+  "started": "16:13:43",
+  "credited": 2360,
+  "rounds": 31,
+  "minted": 0,
+  "chan": {
+   "1128": {
+    "windows": 4,
+    "accepted": 580,
+    "closed": 11,
+    "gap": 1800,
+    "next": 1794834485.7457972
+   },
+   "32": {
+    "windows": 6,
+    "accepted": 580,
+    "closed": 10,
+    "gap": 1800,
+    "next": 1794833190.8596864
+   }
+  },
+  "last_final": 1205
+ }
+}
