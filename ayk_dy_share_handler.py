@@ -50,7 +50,7 @@ import order_baseline as B
 
 function = FunctionApp()
 
-CODE_VERSION = '2026-11-17.4'   # 每次改动代码都要动这个号，窗口一开就能看出跑的是哪一份
+CODE_VERSION = '2026-11-17.5'   # 每次改动代码都要动这个号，窗口一开就能看出跑的是哪一份
 LOSE_NUM = 5                # 余量：分享按真实增量结算，留 5 条收口，留大等于白刷
 THREADS = int(sys.argv[3]) if len(sys.argv) > 3 and str(sys.argv[3]).isdigit() else 20
 # 每单每轮最长耗时（秒）。原来是 2400，给「1800 条满额单一次吃完」留的余量；
@@ -82,6 +82,9 @@ CEIL_MIN_TODAY = int(os.environ.get('SHARE_CEIL_MIN', 0)) or max(1000, int(VIDEO
 # 谁抢到 order_<sn>.lock 谁刷，抢不到的直接跳过，等下一圈再抢。
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ORDER_LOCK_TTL = float(os.environ.get('SHARE_ORDER_LOCK_TTL', BUDGET + 600))
+# 视频归属多久没动静可以收回。定 1 小时：单条视频的日额度 1800 条，正常一单
+# 几十分钟内必然有回写；超过 1 小时没有任何一轮碰它，说明持单窗口已经不在了。
+VIDEO_OWNER_TTL = float(os.environ.get('SHARE_VIDEO_OWNER_TTL', 3600))
 
 
 def _lock_path(order_sn):
@@ -485,6 +488,7 @@ while True:
                     show_message(f'第 {looper_num} 次 | {order_sn}', '订单完成',
                                  f'净增 {current - start_num}/{order_num} | 基线 {start_num} | '
                                  + str(function.update_order_state(order_sn, 4, '订单完成')))
+                    B.video_release(aweme_id, order_sn)   # 让位，同视频的下一单立刻能接管
                     zero_rounds.pop(order_sn, None)
                     zero_skip.pop(order_sn, None)
                     del order
@@ -535,7 +539,34 @@ while True:
                 # 用读单时那份旧 current 算缺量，会多刷出 100~300 条（3246295 超交 300 就是这么来的）。
                 live = share_count(aweme_id)
                 if live >= 0:
-                    if live > current:
+                    # 视频独占：判满用的是视频的绝对分享量，两条单同时刷同一条视频时，
+                    # 对方刷出来的增量会被本单算进自己的净增 —— 3253143 / 3253177 就是
+                    # 同时对着 7687127311098894452 跑，视频 698→876（两单各 100 条），
+                    # 两单都按「净增 178 >= 100」写了完成。独占之后同一时刻只有一单吃增量。
+                    got, prev = B.video_lock(aweme_id, order_sn, VIDEO_OWNER_TTL)
+                    if not got:
+                        show_message(f'第 {looper_num} 次 | {order_sn}', '同视频排队',
+                                     f'视频 {aweme_id} 正由订单 {prev} 刷，本单让位，下一轮再抢')
+                        release_order(order_sn)
+                        del order
+                        continue
+                    if prev and prev != order_sn:
+                        # 换手：上一单在这个视频上刷出来的量不属于本单，基线重设到此刻，
+                        # 账本整条重建（restart=True，delivered 归零、曲线从此刻起算），
+                        # 缺量按整单重算。不重设的话本单会白吃上一单的量。
+                        start_num = B.force(order_sn, aweme_id, live)
+                        current = live
+                        rec = P.ensure(order_sn, order_num, start_num=start_num,
+                                       hours=PACE_HOURS, shape=PACE_SHAPE,
+                                       per_day=PACE_PER_DAY, head_pct=PACE_HEAD_PCT,
+                                       head_min=PACE_HEAD_MIN, restart=True)
+                        surplus_num = order_num
+                        function.update_order_progress(order_sn, start_num, current)
+                        show_message(f'第 {looper_num} 次 | {order_sn}', '接管视频',
+                                     f'上一单 {prev} 已收口 | 基线重设 {start_num} | '
+                                     f'缺量回到整单 {order_num}')
+                        target = min(order_num, room)
+                    elif live > current:
                         current = live
                         rec = P.align(order_sn, current - start_num)
                     surplus_num = order_num - (current - start_num)
@@ -545,6 +576,7 @@ while True:
                     show_message(f'第 {looper_num} 次 | {order_sn}', '订单完成',
                                  f'净增 {current - start_num}/{order_num}，'
                                  + str(function.update_order_state(order_sn, 4, '订单完成')))
+                    B.video_release(aweme_id, order_sn)
                     zero_rounds.pop(order_sn, None)
                     zero_skip.pop(order_sn, None)
                     day_skip.pop(order_sn, None)
@@ -598,6 +630,7 @@ while True:
                 if left <= LOSE_NUM or P.done(order_sn):
                     show_message(f'第 {looper_num} 次 | {order_sn}', '订单完成',
                                  function.update_order_state(order_sn, 4, '订单完成'))
+                    B.video_release(aweme_id, order_sn)
                     zero_rounds.pop(order_sn, None)
                     zero_skip.pop(order_sn, None)
                     day_skip.pop(order_sn, None)

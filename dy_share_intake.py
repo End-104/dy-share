@@ -41,7 +41,7 @@ ONCE = str(os.environ.get('SHARE_INTAKE_ONCE', '0')).lower() not in ('0', 'false
 DRY = str(os.environ.get('SHARE_INTAKE_DRY', '0')).lower() not in ('0', 'false', 'no', 'off')
 STATE_FILE = os.path.join(BASE, 'intake_state.json')
 LOCK_FILE = os.path.join(BASE, 'intake.lock')
-CODE_VERSION = '2026-11-17.4'   # 与 ayk_dy_share_handler.py 同号，服务器上跑的是哪份一看就知道
+CODE_VERSION = '2026-11-17.5'   # 与 ayk_dy_share_handler.py 同号，服务器上跑的是哪份一看就知道
 
 
 def show(tag, msg, content=''):
