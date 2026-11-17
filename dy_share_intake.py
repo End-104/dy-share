@@ -28,7 +28,7 @@ import urllib.request
 import order_baseline as B
 
 BASE = os.path.dirname(os.path.abspath(__file__))
-GOODS = [g.strip() for g in os.environ.get('SHARE_GOODS', '1763,643').split(',') if g.strip()]
+GOODS = [g.strip() for g in os.environ.get('SHARE_GOODS', '1594,997').split(',') if g.strip()]
 CYCLE = float(os.environ.get('SHARE_INTAKE_CYCLE', 20))
 PAGE_LIMIT = int(os.environ.get('SHARE_INTAKE_PAGE_LIMIT', 50))
 MAX_PAGES = int(os.environ.get('SHARE_INTAKE_PAGES', 20))
@@ -41,7 +41,7 @@ ONCE = str(os.environ.get('SHARE_INTAKE_ONCE', '0')).lower() not in ('0', 'false
 DRY = str(os.environ.get('SHARE_INTAKE_DRY', '0')).lower() not in ('0', 'false', 'no', 'off')
 STATE_FILE = os.path.join(BASE, 'intake_state.json')
 LOCK_FILE = os.path.join(BASE, 'intake.lock')
-CODE_VERSION = '2026-11-17.5'   # 与 ayk_dy_share_handler.py 同号，服务器上跑的是哪份一看就知道
+CODE_VERSION = '2026-11-17.6'   # 与 ayk_dy_share_handler.py 同号，服务器上跑的是哪份一看就知道
 
 
 def show(tag, msg, content=''):
@@ -262,7 +262,7 @@ def _locked(order_sn):
 def snapshot_baseline(app, order):
     """接单瞬间给平台补一个非零基线，返回一句人话说明补没补上。
 
-    为什么要在接单这一步就补：平台对 1763 / 643 从不下发 startNum（恒为 0），
+    为什么要在接单这一步就补：平台对 1594 / 997 从不下发 startNum（恒为 0），
     而窗口判完成用的是 净增 = 真实分享量 - startNum。startNum 是 0 时，
     净增直接等于视频的历史总分享量：一条被刷到 698 的视频，任何 100 条的单
     第一圈就会算出 100 - 698 < 0，几秒内被写成完成，一条都没发 ——

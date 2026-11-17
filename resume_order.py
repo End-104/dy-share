@@ -13,7 +13,7 @@ refund：默认退「下单量 - 已净增量」的缺量部分，改状态 7 �
 import sys
 
 sys.path.insert(0, r'D:\dy_share')
-sys.argv = ['resume_order.py', 'cfg_qw_dy_share_1763', '1', '24']
+sys.argv = ['resume_order.py', 'cfg_qw_dy_share_1594', '1', '24']
 
 from function import FunctionApp  # noqa: E402
 

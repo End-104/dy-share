@@ -15325,6 +15325,10 @@ class FunctionApp:
         self.app_secret = config['app_secret']
         self.goods_sn = config['goods_sn']
         self.three_url = config['three_url']
+        # 单视频每日分享上限：按货号写在配置里（1594=1200，997=0 表示不限）。
+        # 没写这个键的老配置留 None，调用方自己退回 SHARE_DAY_CAP 全局口径。
+        self.video_day_cap = config.get('video_day_cap')
+        self.config = config
         self.page = sys.argv[2]
         self.limit = sys.argv[3]
         print(
