@@ -11,7 +11,7 @@
 | `verify_share.py` | 真值验证器：拉官方 `statistics.share_count` 做前后对比，判定是否真的入账 |
 | `applog_replay.py` | AppLog 埋点重放通道（备用，字段被改时用） |
 | `ayk_dy_share_handler.py` | 供应商分享量订单端：拉单→换ID→上报→回写→完成/退款，支持 `dry` 演练 |
-| `start_share.bat` | 一次性拉起 643 / 1763 共 12 个接单进程（每货号 6 页，每单 24 线程） |
+| `start_share.bat` | 一次性拉起 1594 / 997 共 12 个接单进程（每货号 6 页，每单 24 线程） |
 | `aid_scan.py` | 扩桶扫描：按 aid × license 打一轮 stats，标出身份能过网关（拿非空回执）的 aid，`--emit-profile` 直接输出可粘的 `PROFILES` 条目 |
 | `aid_probe.py` | 单 aid 点桶：只看 `share_count` 是否涨，涨了才写 `aid_alive.json` |
 | `aid_expand.py` | 阶梯量容量：按 `--chunk` 递增打，连续 `--stop-empty` 轮 0 计入收工，得到该 aid 真实容量 |
@@ -33,9 +33,10 @@
 | `run_1800.bat` | 生产启动器：一套实测口径拉起 `daily1800.py`（1800 目标、边烧边补、收工 23:30） |
 | `video_cap.json` | 已测到的单视频天花板记录（639 / 341 两档，含 attempts / accepted / consecutive_empty） |
 | `_deleted_20261116.zip` | 2026-11-16 清掉的中间实验脚本备份（`bucket_lab` `cap_probe` `share_plan` `window_probe` `share_ceiling_lab` `share_axis_probe` `dy_share_three` `channel_bridge` `smoke_share` 及两个自测脚本），要回看直接解压 |
-| `start.bat` `start_share.bat` | 分享量接单窗口：`start.bat` 为总入口，`start_share.bat` 实际拉起 12 个进程；`start.bat dry` 为演练 |
-| `cfg_qw_dy_share_1763.json` | 分享订单端配置，`goods_sn = 1763`（D超级分享） |
-| `cfg_qw_dy_share_643.json` | 分享订单端配置，`goods_sn = 643` |
+| `start.bat` `start_share.bat` | 分享量接单窗口：`start.bat` 为总入口，`start_share.bat` 实际拉起 30 个进程（1594 × 15 个窗口用 1–15 页 + 997 × 15 个窗口用 16–30 页，每页 24 线程 = 720 个并发位）；两组窗口数对称，页号在全队内不重复；`start.bat dry` 为演练 |
+| `cfg_qw_dy_share_1594.json` | 分享订单端配置，`goods_sn = 1594`，`video_day_cap = 1200`（单视频每日 1200 条） |
+| `cfg_qw_dy_share_997.json` | 分享订单端配置，`goods_sn = 997`，`video_day_cap = 1200`（单视频每日 1200 条，与 1594 同口径） |
+| `cfg_qw_dy_share.json` | 老的无后缀配置，`goods_sn = 1594`，`video_day_cap = 1200`；`function.py` 收到裸名时退到它 |
 | `.venv312/` | 现场新建的可用虚拟环境（原 `.venv` 指向另一台机器的 Python311，已失效） |
 
 ## 环境
@@ -55,11 +56,11 @@ D:\jiedan\.venv312\Scripts\python.exe -m pip install httpx gmssl snowland-smx py
 | 播放量 · 上报 | 通，1:1 | 演练 3 单各 20 条：accepted=20，播放量 16→36 / 16→36 / 10→30 |
 | 播放量 · 进程 | 未运行 | 本机无 python 进程，订单在排队 |
 | 分享量 · 代码 | 已写 | `ayk_dy_share_handler.py`，与播放端同构 |
-| 分享量 · 配置 | 已填 | `cfg_qw_dy_share.json` 的 `goods_sn = 1763` |
-| 分享量 · 商品 | 已上架 | 货号 1763「D超级分享」，全状态扫描 1–9000 号确认 |
+| 分享量 · 配置 | 已填 | `cfg_qw_dy_share.json` 的 `goods_sn = 1594`（2026-11-17 由 1763 换代而来） |
+| 分享量 · 商品 | 已上架 | 货号 1594（原 1763）与 997（原 643），各带自己的 `video_day_cap` |
 | 分享量 · 启动 | 已放开 | `start.bat` 末尾两行已取消注释，每进程 100 条/页 |
 
-播放量的接口、签名、回写流程全部可用；分享量货号 1763 已在供应商账号下，配置填好、启动行已开。现存 4 单全是 2026-11-05/06 的历史单（1 单停在 state=1，3 单 state=6 已退），`state=2` 待处理为 0，所以分享端进程会空转等新单，这是正常状态。
+播放量的接口、签名、回写流程全部可用；分享量两个货号（1594 限 1200 条/视频/天、997 不限）都已在供应商账号下，配置填好、启动行已开。历史单已处理完，`state=2` 待处理为 0 时分享端进程会空转等新单，这是正常状态。
 
 ## 播放量订单端的三个坑（已在 `ayk_dy_bf_handler.py` 修掉）
 
@@ -88,12 +89,12 @@ python ayk_dy_bf_handler.py cfg_qw_dy_bf_473 1 5 dry
 984   闪电小单播放【秒2800】   7299 单
 1753  自营-小单播放              13 单
 1760  小单播放【秒1200】      10423 单
-1763  D超级分享                   4 单   ← 分享量，唯一一个
+1763  D超级分享                   4 单   ← 分享量（2026-11-17 起换号为 1594 / 997）
 ```
 
-八个里七个是播放类，一个（1763）是分享类，已填进 `cfg_qw_dy_share.json`。
+八个里七个是播放类，分享类原来只有一个（1763），现在拆成 1594（限 1200 条/视频/天）与 997（不限）两条线，都填进各自的 `cfg_qw_dy_share_<货号>.json`。
 
-**注意扫描口径**：用 `state=4`（已完成）扫会漏掉 1763，它那 4 单分别是 state=1 和 state=6，
+**注意扫描口径**：用 `state=4`（已完成）扫会漏掉这类自发货源，它那 4 单分别是 state=1 和 state=6，
 所以商品盘点必须用 `state=` 空串。按 `state=4` 口径生成的 `goods_list.json` 只有 7 条、已作废，本次清理已删除。
 
 ## 已确认真值（2026-11-13 16:10 实测，非推测）
@@ -221,26 +222,55 @@ python applog_replay.py --target "https://v.douyin.com/xxxx/" --count 300 --thre
 
 `aweme_id` 是固定 19 位，替换前后字节长度一致，protobuf 的 varint 长度前缀不用改；`_rticket`、`ts` 与 body 内时间戳会自动刷新，签名用模板里的设备重新算。
 
-## 分享量下单流程（货号 643 / 1763）
+## 分享量下单流程（货号 1594 / 997）
 
 和播放端逐行同构，唯一差别是计数器与字段：播放端用 `get_play_count` + `field=''`，
 分享端用 `share_count` + `field='share_delta'`。
 
-单进程 = 一个货号 + 一页订单。十二个进程（两货号 × 六页）覆盖全部待处理单，单视频满额靠台账卡口 + 轮转调度：
+单视频每日口径按货号走，写在 cfg 里，进程一开窗就打印出来：
+
+| 货号 | `video_day_cap` | 口径 |
+|---|---|---|
+| 1594 | `1200` | 同一条视频每个自然日最多入账 1200 条，第二天零点自动重置 |
+| 997 | `0` | 不限；`video_room` 回 `10^9`，`day_cap_hit` 恒 `False`，booster 里额度判断整段跳过 |
+
+配置里没写 `video_day_cap` 的退回 `SHARE_DAY_CAP` 环境变量（`start_share.bat` 里 100000，等于不设限）。
+
+单进程 = 一个货号 + 一页订单。三十个进程（1594 × 15 页 + 997 × 15 页，每页 24 线程 = 720 个并发位）覆盖全部待处理单，两组窗口数对称、页号在全队内不重复（1594 用 1–15，997 用 16–30），单视频满额靠台账卡口 + 轮转调度：
 
 ```bash
-python ayk_dy_share_handler.py cfg_qw_dy_share_1763 1 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_1763 2 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_1763 3 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_1763 4 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_1763 5 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_1763 6 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_643  1 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_643  2 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_643  3 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_643  4 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_643  5 24
-python ayk_dy_share_handler.py cfg_qw_dy_share_643  6 24
+# 1594 组：页 1–15
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 1 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 2 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 3 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 4 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 5 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 6 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 7 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 8 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 9 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 10 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 11 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 12 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 13 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 14 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 15 24
+# 997 组：页 16–30（从 16 起是为了页号不撞，不是 997 有 30 页单）
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 16 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 17 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 18 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 19 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 20 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 21 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 22 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 23 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 24 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 25 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 26 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 27 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 28 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 29 24
+python ayk_dy_share_handler.py cfg_qw_dy_share_997 30 24
 ```
 
 第三个参数是每单线程数（省略默认 20），第四个参数写 `dry` 进演练模式。
@@ -274,7 +304,7 @@ start_share.bat
 演练模式不动任何订单状态，只解析链接、试打 3–10 条、比对前后计数：
 
 ```bash
-python ayk_dy_share_handler.py cfg_qw_dy_share_1763 1 20 dry
+python ayk_dy_share_handler.py cfg_qw_dy_share_1594 1 20 dry
 ```
 
 交付前自检（不依赖待处理单，11 项逐段判定）：
@@ -283,14 +313,18 @@ python ayk_dy_share_handler.py cfg_qw_dy_share_1763 1 20 dry
 python _share_flow_selftest.py
 ```
 
-2026-11-13 18:04 实测结果：11 项全过。1763 历史 4 单、待处理 0；历史链接
+2026-11-13 18:04 实测结果：11 项全过。当时挂的货号历史 4 单、待处理 0；历史链接
 `https://v.douyin.com/Nieiq-aw6To/` → `7687951780465923904`，`share_count = 8`；
 设备池 1688 台全活；三方 `execState` 返回 `2`、`execNum` 返回 `0`。
 
-**643 的现状**：订单接口对它返回 `total=0`，全状态也是 0。供应商接口只按订单反查商品，
-零单货号与不存在货号返回完全一样（都是 `total=0`），所以没法从接口判断 643 是「刚上架没出单」
+**2026-11-17 换号 + 换凭证**：货号 1763 → 1594（`video_day_cap = 1200`），643 → 997（`video_day_cap = 1200`，与 1594 同口径），
+两个货号共用同一对新凭证（`AppId = t6OXRAsRYZRuy_9K-QVZQWx1jWHA1Mt0`），
+`cfg_qw_dy_share_1763.json` / `cfg_qw_dy_share_643.json` 已删除，老的无后缀配置改为挂 1594。
+
+**997 的早期现状（换号前叫 643）**：订单接口对返回 `total=0`，全状态也是 0。供应商接口只按订单反查商品，
+零单货号与不存在货号返回完全一样（都是 `total=0`），所以没法从接口判断是「刚上架没出单」
 还是「货号写错」。进程照常配好挂着，一旦有单立刻接；要确认商品本身，需在供应商后台商品管理里
-核对 643 的名称与类别，若不是分享类，改 `cfg_qw_dy_share_643.json` 的 `goods_sn` 即可。
+核对 997 的名称与类别，若不是分享类，改 `cfg_qw_dy_share_997.json` 的 `goods_sn` 即可。
 
 ## 备用通道：本地队列
 
@@ -337,7 +371,7 @@ python share_queue.py                    # 正式跑，结果回写同一文件
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `SHARE_DAY_CAP` | `1800` | 单视频每自然日入账上限；`0` = 不限（只剩设备池约束） |
-| `SHARE_DEVICE_GAP` | `300` | 同一台设备两次分享的最小间隔（秒）；不设会几秒内连派几十条，被判机器 |
+| `SHARE_DEVICE_GAP` | `90` | 同一台设备两次分享的最小间隔（秒）。设备池实测 7941 台（`devices34` 1688 + `pool_extra` 6253 去重）÷ 90s = 88 请求/秒上限；30 窗口的需求约 67 请求/秒（180 条 ÷ 230s × 30 ÷ 计入率 35%），计入率掉到 28% 时需求 84 请求/秒，仍在 88 以内。设 `0` 会让 `_pick()` 走无间隔分支，几秒内对同一台设备连派几十条，必被判机器 |
 | `SHARE_ROUND_CHUNK` | `180` | 单轮最多吃多少条，吃完回队尾；`0` = 一轮吃满目标 |
 | `SHARE_ZERO_ROUNDS` | `4` | 零增量退避重试轮数，超了才退款 |
 | `SHARE_STALL_PAUSE` | `90` | 计数停滞时暂停发请求、等落账的秒数 |

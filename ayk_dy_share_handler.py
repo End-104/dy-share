@@ -1,17 +1,17 @@
 # coding: utf-8
-"""ayk_dy_share_handler.py —— 供应商分享量订单处理端（货号 643 / 1763）
+"""ayk_dy_share_handler.py —— 供应商分享量订单处理端（货号 997 / 1594）
 
 与播放端 ayk_dy_bf_handler.py 完全同构，只把「播放量」换成「分享量」：
     播放端：get_play_count + ShareBooster(field='',  counter=get_play_count)
     分享端：share_count    + ShareBooster(field='share_delta', counter=share_count)
 
 用法：
-    python ayk_dy_share_handler.py cfg_qw_dy_share_1763 1 24         # 正常接单
-    python ayk_dy_share_handler.py cfg_qw_dy_share_1763 1 24 dry     # 演练：只试打，不改订单
-    python ayk_dy_share_handler.py cfg_qw_dy_share_643  1 24
+    python ayk_dy_share_handler.py cfg_qw_dy_share_1594 1 24         # 正常接单
+    python ayk_dy_share_handler.py cfg_qw_dy_share_1594 1 24 dry     # 演练：只试打，不改订单
+    python ayk_dy_share_handler.py cfg_qw_dy_share_997  1 24
 
 第三个参数是每单线程数（省略=20），第四个参数是 dry 时进演练模式。
-单个进程只处理一个货号的一页订单。货号 643 与 1763 各起若干进程，
+单个进程只处理一个货号的一页订单。货号 997 与 1594 各起若干进程，
 页码错开，靠平台 execState 锁避免两个进程抢同一单。
 
 每单流程（9 步，输入 -> 输出）：
@@ -19,23 +19,28 @@
     2  读详情     get_order_detail(order_sn)               -> 订单对象，校验 state 仍为 2
     3  抢锁       execState?order_sn=..                    -> '1' 表示已被别的进程领走，跳过
     4  换 ID      execute?order_sn=..&exec_update=1         -> 19 位 aweme_id，失败置 state=3
-    5  查额度     video_room(aweme_id)                     -> 今日剩余条数；<=5 直接把单排到次日零点
+    5  查额度     video_room(aweme_id, day_cap)             -> 今日剩余条数；<=5 直接把单排到次日零点
     6  读基数     share_count(aweme_id)                    -> 当前真实分享量；读不到退回 execNum
     7  算缺量     min(下单数量, 今日额度, 单轮切片)          -> 本轮目标；缺量 <=LOSE_NUM 直接完成
-    8  上报       ShareBooster.run(day_cap=1800)           -> accepted/delta/day_capped
+    8  上报       ShareBooster.run(day_cap=...)            -> accepted/delta/day_capped
     9  回写结算   再读 share_count -> update_order_progress -> 完成(4) / 次日续刷 / 退款(7)
 
-单视频每日口径（跨进程共享，台账在 used_devices.db）：
-    同一条视频每个自然日最多入账 1800 条，下单量小于 1800 就按下单量；
-    第二天零点自动重置，同一条视频可以再刷 1800 条，不需要人工清库。
+单视频每日口径（跨进程共享，台账在 used_devices.db，按货号取值）：
+    货号 1594：同一条视频每个自然日最多入账 1200 条（cfg 里 "video_day_cap": 1200）；
+    货号 997 ：不限（cfg 里 "video_day_cap": 0，video_room 回 10^9、day_cap_hit 恒 False）；
+    配置里没写 video_day_cap 的退回 SHARE_DAY_CAP 环境变量（默认 10 万，等于不设限）。
+    第二天零点自动重置，同一条视频按当天口径重新计额度，不需要人工清库。
 
 多单并发时的调度口径（保证每个用户都能吃满自己的额度）：
-    · SHARE_ROUND_CHUNK=400  每轮只吃 400 条就回队尾，避免前几单占满设备
-    · SHARE_DEVICE_GAP=300   同一台设备两次分享最小间隔，防止被服务端判机器
+    · SHARE_ROUND_CHUNK=180  每轮只吃 180 条就回队尾，避免前几单占满设备
+    · SHARE_DEVICE_GAP=90    同一台设备两次分享最小间隔（代码缺省 300，launcher 设 90）。
+                             设备池实测 7941 台 ÷ 90s = 88 请求/秒上限，30 个窗口
+                             × 180 条 ÷ 230s 一轮 ÷ 计入率 35% ≈ 67 请求/秒需求，尚有余量。
     · SHARE_ZERO_ROUNDS=4    零增量最多退避重试 4 轮（600/1200/2400/3600s）才退款
 """
 
 import gc
+import json
 import os
 import sys
 import time
@@ -50,12 +55,12 @@ import order_baseline as B
 
 function = FunctionApp()
 
-CODE_VERSION = '2026-11-17.5'   # 每次改动代码都要动这个号，窗口一开就能看出跑的是哪一份
+CODE_VERSION = '2026-11-17.6'   # 每次改动代码都要动这个号，窗口一开就能看出跑的是哪一份
 LOSE_NUM = 5                # 余量：分享按真实增量结算，留 5 条收口，留大等于白刷
 THREADS = int(sys.argv[3]) if len(sys.argv) > 3 and str(sys.argv[3]).isdigit() else 20
 # 每单每轮最长耗时（秒）。原来是 2400，给「1800 条满额单一次吃完」留的余量；
 # 现在节奏层不再限速，一轮吃到视频桶关窗或吃满本批 180 条就自然退出，
-# 2400 秒只会让一条单占住一个窗口四十分钟，其余 11 个窗口排在同一单后面干等。
+# 2400 秒只会让一条单占住一个窗口四十分钟，其余 29 个窗口排在同一单后面干等。
 BUDGET = int(os.environ.get('SHARE_BUDGET', 60 * 20))
 CHANNELS = ('1128', '32')   # 实测能承载 share_delta 的两条 Android 通道
 # ---- 交付口径：客户下多少就刷多少，今天不齐明天接着刷
@@ -71,13 +76,30 @@ ZERO_BACKOFF = float(os.environ.get('SHARE_ZERO_BACKOFF', 600))   # 零增量退
 # 判到天花板只把单子挪到次日零点，不计数、不退单。
 # CEIL_MIN_TODAY：今天至少吃到这么多条才允许判「当日天花板」并推到零点。
 # 日限抬到 10 万以后，写死的 1000 会让「今天进过 1000 条、这一轮恰好零增量」的
-# 普通关窗被误判成日顶，一判就跳过一整天。改成跟着日限走：日限 - 800。
-# 日限仍是 1800 的老配置算出来还是 1000（行为不变），日限 10 万时是 99200（永不到点）。
-CEIL_MIN_TODAY = int(os.environ.get('SHARE_CEIL_MIN', 0)) or max(1000, int(VIDEO_DAY_CAP) - 800)
+# 普通关窗被误判成日顶，一判就跳过一整天。改成跟着货号日限走：日限 - 800。
+# 货号 1594 日限 1200 算出来 1000；日限仍是 1800 的老配置算出来还是 1000（行为不变）；
+# 货号 997 日限 0（不限）没有本地日顶可言，判据给一个够不到的数，
+# 零增量一律落到退避那条分支，不会被误推到次日零点白等一整天。
+CEIL_MIN_ENV = int(os.environ.get('SHARE_CEIL_MIN', 0))
+
+
+def ceil_min_today(day_cap: int) -> int:
+    """某货号的「当日天花板」判定门槛：今天至少进这么多条，才允许判平台日顶。"""
+    if CEIL_MIN_ENV > 0:
+        return CEIL_MIN_ENV
+    cap = int(day_cap)
+    if cap <= 0:
+        return 10 ** 9
+    return max(1000, cap - 800)
+
+
+def cap_text(day_cap: int) -> str:
+    """日限的人话写法：0 打成「不限」，免得日志里出现「/0」被当成除零 bug。"""
+    return '不限' if int(day_cap) <= 0 else str(int(day_cap))
 
 # ---- 订单级互斥：一条单子同一时刻只允许一个窗口发上报
 # 三方接口的 execState 不是会话语义：execute 拿回来的 1 只代表「这一次领取」，
-# 下一秒再查又回 2。12 个窗口因此会同时对着同一条单子各发一批，实测把 800 条
+# 下一秒再查又回 2。30 个窗口因此会同时对着同一条单子各发一批，实测把 800 条
 # 的单子刷到 1100（超交 300，等于白送）。平台侧没有可用的订单锁，只能在本机做：
 # 谁抢到 order_<sn>.lock 谁刷，抢不到的直接跳过，等下一圈再抢。
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -181,7 +203,37 @@ def release_order(order_sn):
             pass
 
 
-def ceiling_hit(aweme_id: str, result: dict) -> bool:
+def order_busy(order_sn):
+    """只读探测这单是不是别的窗口正在刷。True 表示本窗口本轮不用管它。
+
+    为什么要这一步：30 个窗口下，任何一页里剩下的单基本都在被别人刷。
+    老流程是「先打详情接口 → 再看平台 execState → 再抢本机锁」，前两步都是
+    HTTP 往返，两条全白打才轮到本机锁发现「窗口忙」。本机锁文件读一次只要
+    几百微秒，所以先在本地判一次，能把这部分空转请求整段砍掉。
+    注意这里只读不抢：抢锁仍然是 claim_order 的事，判活/过期口径必须一致，
+    否则会出现「本地判忙跳过」和「锁已过期可抢」两套结论打架。
+    """
+    path = _lock_path(order_sn)
+    try:
+        with open(path, encoding='utf-8') as f:
+            parts = f.read().split()
+    except Exception:
+        return False                      # 没锁文件 = 没人刷，正常往下走
+    holder = parts[0] if parts else ''
+    try:
+        ts = float(parts[1]) if len(parts) > 1 else os.path.getmtime(path)
+    except Exception:
+        ts = time.time()
+    if holder == str(os.getpid()):
+        return False                      # 自己的锁：上一轮漏放，照常进去续用
+    if not holder:
+        return False
+    if not _pid_alive(holder):
+        return False                      # 持锁窗口已经没了，claim_order 会清掉它
+    return (time.time() - ts) <= ORDER_LOCK_TTL
+
+
+def ceiling_hit(aweme_id: str, result: dict, day_cap: int = None) -> bool:
     """今天进过量、这轮零增量、本地额度还没满、且今天已经吃到接近抖音日顶——四条同时成立才算平台天花板。
 
     为什么用「今天进过量」当判据：真死的视频今天一条都进不去；
@@ -198,9 +250,10 @@ def ceiling_hit(aweme_id: str, result: dict) -> bool:
     used = U.video_day_used(aweme_id)
     if used <= 0:
         return False
-    if used < CEIL_MIN_TODAY:
+    cap = int(VIDEO_DAY_CAP if day_cap is None else day_cap)
+    if used < ceil_min_today(cap):
         return False
-    if U.video_room(aweme_id, VIDEO_DAY_CAP) <= LOSE_NUM:
+    if U.video_room(aweme_id, cap) <= LOSE_NUM:
         return False
     return True
 
@@ -244,7 +297,7 @@ PACE_HEAD_RETRY = float(os.environ.get('SHARE_PACE_HEAD_RETRY', 600))
 
 DRY = len(sys.argv) > 4 and str(sys.argv[4]).lower() == 'dry'
 
-# 同一批窗口吃的货号：1763 和 643 都是「分享量」类，配置里默认只挂一个，
+# 同一批窗口吃的货号：1594 和 997 都是「分享量」类，配置里默认只挂一个，
 # 结果一半窗口在别的货号上永远空转。这里用逗号把要吃的货号全列出来，
 # 每个窗口每圈把每个货号的单子都拉一遍再合并，谁的货号都能被抢到。
 _raw_goods = os.environ.get('SHARE_GOODS') or ''
@@ -253,7 +306,36 @@ if not GOODS_LIST:
     GOODS_LIST = [str(getattr(function, 'goods_sn', '') or '').strip()]
 GOODS_LIST = [g for g in GOODS_LIST if g]
 if not GOODS_LIST:
-    GOODS_LIST = ['1763']
+    GOODS_LIST = ['1594']
+
+
+def goods_day_cap(goods: str) -> int:
+    """货号 → 单视频每日入账上限。0 = 不限。
+
+    为什么从配置文件读而不是写死在代码里：日限是跟着货源走的商务参数
+    （1594 限 1200、997 不限），换一次货源就要改一次代码等于每次都要重发版本；
+    写进 cfg_qw_dy_share_<货号>.json 的 video_day_cap，改配置即生效。
+    配置里没写这个键的退回 SHARE_DAY_CAP 全局口径，老配置行为不变。
+    """
+    path = os.path.join(BASE_DIR, 'cfg_qw_dy_share_{}.json'.format(goods))
+    try:
+        with open(path, encoding='utf-8') as fh:
+            raw = json.load(fh).get('video_day_cap')
+    except Exception as exc:
+        show_message('配置', '日限读取失败，退回全局口径',
+                     '{} | {}'.format(goods, str(exc)[:80]))
+        return int(VIDEO_DAY_CAP)
+    if raw is None:
+        return int(VIDEO_DAY_CAP)
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return int(VIDEO_DAY_CAP)
+
+
+# 每个货号一份日限，进程启动时读一次：配置文件在运行期不会被改，
+# 而每张单都去开文件读盘没必要（一台机器 30 个窗口 × 每秒十几单）。
+DAY_CAP_BY_GOODS = {g: goods_day_cap(g) for g in GOODS_LIST}
 
 # 设备池全进程共用：冷却状态跨订单保持，避免同一台设备在相邻订单里被连点
 DEVICE_POOL = DevicePool(devices34 + load_extra_devices())
@@ -278,6 +360,11 @@ zero_since = {}             # order_sn -> 这一串零增量是从什么时候�
 # 而日志里没有任何一行能区分新旧，只能靠肉眼看路径。有了这行，路径和版本一起露出来。
 print('[分享端] 版本 {} | {} | 缺量口径=本单基线台账，无基线不判完成'.format(
     CODE_VERSION, os.path.abspath(__file__)))
+# 日限横幅：1200 / 不限 这类口径必须一开窗就能看见，否则日志里看不出跑的是哪套额度。
+print('[分享端] 货号日限 {} | 全局口径 {} | 0 或负数=不限'.format(
+    ' '.join('{}={}'.format(g, (DAY_CAP_BY_GOODS.get(g) or '不限'))
+             for g in GOODS_LIST),
+    VIDEO_DAY_CAP))
 
 
 def order_link(order) -> str:
@@ -289,16 +376,19 @@ def order_link(order) -> str:
     return ''
 
 
-def run_booster(aweme_id: str, target: int) -> dict:
+def run_booster(aweme_id: str, target: int, day_cap: int = None) -> dict:
     """分享通道上报。field 用已确认的 share_delta，计数器用官方 share_count。
 
-    day_cap 传的是本地单视频每日上限（SHARE_DAY_CAP，默认 10 万，等于不设限）。
-    为什么还传：booster 内部用它在「预留名额 / 收工复核 / 台账校准」三处对账，
-    传 0 会被 day_cap_hit 判成恒真（used >= 0），所以只能给大数字，不能给 0。
+    day_cap 传本单货号的单视频每日上限：1594 = 1200，997 = 0（不限）。
+    为什么按货号传：两条货号的日限不一样，用同一个全局值就得给两条线各起一套进程；
+    而 997 不限，必须传 0 —— booster 里每一处额度判断都写在 `if self.day_cap:` 里，
+    0 等于整段跳过（预留名额 / 收工复核 / 台账校准三处都不再夹额度），
+    传大数字反而会在 10 万那一点上重新夹一次。
     """
+    cap = VIDEO_DAY_CAP if day_cap is None else max(0, int(day_cap))
     booster = ShareBooster(aweme_id, target, threads=THREADS, timeout=BUDGET,
                            channels=CHANNELS, verbose=True, field=SHARE_FIELD,
-                           counter=share_count, day_cap=VIDEO_DAY_CAP,
+                           counter=share_count, day_cap=cap,
                            device_pool=DEVICE_POOL, info_pool=INFO_POOL)
     return booster.run()
 
@@ -316,12 +406,12 @@ def current_share(order_sn: str, aweme_id: str, start_num: int) -> int:
 
 # ---- 自动接单：把平台挂在「已付款(1)」的分享单自己推进到「处理中(2)」
 # 为什么要在本机做：播放标品是平台自家货源，客户付完款 1~5 秒平台就自动置 2；
-# 1763 / 643 这种自发货源平台不给自动接单开关，单子会一直停在 1 等人点。
+# 1594 / 997 这种自发货源平台不给自动接单开关，单子会一直停在 1 等人点。
 # 实测 3249467、3247753 挂在 1 上几个小时没人碰，客户那边看到的就是「没开工」。
 # 接单只是把 1 写成 2，不动数量、不动金额、不回写任何执行数据，剩下的全交给缺量循环。
 AUTO_ACCEPT = str(os.environ.get('SHARE_AUTO_ACCEPT', '1')).lower() not in ('0', 'false', 'no', 'off')
 # 每圈最多接几张：一次把几百张全置 2，会让所有窗口同时去抢同一批单的锁，
-# 抢不到的原地空转；30 张一批，够 12 个窗口分工，也不会把列表撑爆。
+# 抢不到的原地空转；30 张一批，够 30 个窗口分工，也不会把列表撑爆。
 INTAKE_MAX = int(os.environ.get('SHARE_INTAKE_MAX', 30))
 
 
@@ -346,6 +436,9 @@ def promote_paid(looper_num) -> list:
             # 置 2 之后本圈就把这条单当处理中单排进队尾，不必等下一圈再拉一次列表。
             msg = function.update_order_state(sn, 2, '自动接单')
             order['state'] = 2
+            # 打上货号标记：下面算单视频日限要靠它区分 1200 与不限，
+            # 平台的订单对象不带 goodsSN，只能在这里补。
+            order['_goods'] = _goods
             pulled.append(order)
             show_message(f'第 {looper_num} 次 | {sn}', '自动接单',
                          f'货号 {_goods} | 下单 {order.get("number")} 条 | '
@@ -361,6 +454,9 @@ while True:
         for _goods in GOODS_LIST:
             _part = function.get_order_list('2', goods_sn=_goods)
             if _part:
+                # 每张单都记下自己是哪个货号拉回来的，后面对账要用它决定日限。
+                for _o in _part:
+                    _o['_goods'] = _goods
                 order_list.extend(_part)
         # 接单放在拉列表之后、统计数量之前：这一圈新接进来的单直接进本次队列，
         # 不用等下一圈（一圈可能二十分钟）。dry 模式不改平台状态，跳过。
@@ -373,10 +469,16 @@ while True:
             last_list_n = len(order_list)
             last_list_ts = time.time()
         if len(order_list) == 0:
-            page = int(time.time() * 1000) % 10
+            # 30 个窗口各自错开一位：以前固定 %10，空页的十几个窗口同时砸在同
+            # 一个随机页上，撞单率 100%，日志里全是「窗口忙」。
+            # 错开之后同一页最多撞 ceil(30/10)=3 个窗口，抢锁有先后、有活干。
+            _win = int(function.page) if str(function.page).isdigit() else 1
+            page = (int(time.time() * 1000) // 1000 + _win) % 10
             for _goods in GOODS_LIST:
                 _part = function.get_order_handler(page, goods_sn=_goods)
                 if _part:
+                    for _o in _part:
+                        _o['_goods'] = _goods
                     order_list.extend(_part)
             if len(order_list) == 0:
                 del order_list
@@ -394,6 +496,11 @@ while True:
                 order_sn = str(order['orderSN'])
                 order_num = int(order['number'])
                 start_num = int(order['startNum'])
+                # 本单货号决定它的单视频日限：1594 = 1200，997 = 0（不限）。
+                # 必须在 get_order_detail 覆盖 order 之前取出来，详情接口不带 _goods 标记。
+                goods_key = str(order.get('_goods') or order.get('goodsSN')
+                                or (GOODS_LIST[0] if GOODS_LIST else ''))
+                day_cap = DAY_CAP_BY_GOODS.get(goods_key, int(VIDEO_DAY_CAP))
 
                 # 这条视频今天的额度已经用完：留单不动，明天零点后自动接着跑
                 if day_skip.get(order_sn, 0) > time.time():
@@ -404,6 +511,16 @@ while True:
                 # 曲线还没走到这条单的额度：跳过，别空转
                 if pace_skip.get(order_sn, 0) > time.time():
                     continue
+                # 本机锁前置判忙：省掉详情接口和平台 execState 两次往返。
+                # 30 个窗口时空页窗口回落到 0-9 随机页，捞到的单九成都在别人手里，
+                # 判忙放在最前面，一个空转窗口一圈的平台请求从 2N 降到 0。
+                if not DRY and order_busy(order_sn):
+                    if (time.time() - skip_log_ts.get(order_sn, 0)) >= SKIP_LOG_EVERY:
+                        skip_log_ts[order_sn] = time.time()
+                        show_message(f'第 {looper_num} 次 | {order_sn}', '窗口忙',
+                                     '另一个窗口持锁中，未查详情直接跳过')
+                    del order
+                    continue
 
                 # ---- 演练：只解析链接试打，不抢锁、不回写、不改状态
                 if DRY:
@@ -412,14 +529,14 @@ while True:
                         show_message(f'第 {looper_num} 次 | {order_sn}', '演练异常', '取不到视频ID')
                         del order
                         continue
-                    room = U.video_room(aweme_id, VIDEO_DAY_CAP)
+                    room = U.video_room(aweme_id, day_cap)
                     if room <= 0:
                         show_message(f'第 {looper_num} 次 | {order_sn}', '演练跳过',
-                                     f'视频 {aweme_id} 今日额度已用满')
+                                     f'视频 {aweme_id} 今日额度已用满（日限 {cap_text(day_cap)}）')
                         del order
                         continue
                     before = share_count(aweme_id)
-                    result = run_booster(aweme_id, min(3, room))
+                    result = run_booster(aweme_id, min(3, room), day_cap)
                     show_message(f'第 {looper_num} 次 | {order_sn}', '演练结果',
                                  f'{aweme_id} | 前:{before} | 后:{result["final"]} | '
                                  f'增量:{result["delta"]} | 接受:{result["accepted"]} | '
@@ -450,17 +567,17 @@ while True:
 
                 # 单视频每日上限前置检查：额度已经用满就不必读计数、不必开线程，
                 # 直接把单子排到明天零点，省一次网络往返也省一批设备。
-                room = U.video_room(aweme_id, VIDEO_DAY_CAP)
+                room = U.video_room(aweme_id, day_cap)
                 if room <= LOSE_NUM:
                     day_skip[order_sn] = U.next_day_start()
                     show_message(f'第 {looper_num} 次 | {order_sn}', '当日额度已用尽',
                                  f'视频 {aweme_id} 今日已入账 {U.video_day_used(aweme_id)}'
-                                 f'/{VIDEO_DAY_CAP}，明日 00:00 后自动续刷')
+                                 f'/{cap_text(day_cap)}（货号 {goods_key}），明日 00:00 后自动续刷')
                     del order
                     continue
 
                 current = current_share(order_sn, aweme_id, start_num)
-                # startNum=0 不是「起点是 0」，是这个货号的平台不下发基线（1763/643 实测全 0）。
+                # startNum=0 不是「起点是 0」，是这个货号的平台不下发基线（1594/997 实测全 0）。
                 # 拿 0 直接算 净增 = 绝对值 - 0，等于把视频历史总分享量算成本次交付：
                 # 3252608（下 100 条、视频历史 500）第一轮就 100-500=-400 <= 5，40 秒写 4 完成，
                 # 一条都没发。3253143 / 3253177 是同一处病在旧副本上又犯了一次：
@@ -525,10 +642,10 @@ while True:
                     del order
                     continue
                 # 抢本机订单锁：抢不到说明另一个窗口正在刷这单，直接跳过。
-                # 为什么必须在本机锁：12 个窗口都会拿到同一个 execState=2，
+                # 为什么必须在本机锁：30 个窗口都会拿到同一个 execState=2，
                 # 各算一次缺量各发一批，缺量是各算各的，超出来的量没人负责。
                 if not claim_order(order_sn):
-                    # 同一条单在 24 个窗口里被跳过是常态，按单节流，不然日志全是这行
+                    # 同一条单在 30 个窗口里被跳过是常态，按单节流，不然日志全是这行
                     if (time.time() - skip_log_ts.get(order_sn, 0)) >= SKIP_LOG_EVERY:
                         skip_log_ts[order_sn] = time.time()
                         show_message(f'第 {looper_num} 次 | {order_sn}', '窗口忙',
@@ -596,7 +713,7 @@ while True:
                              f'视频ID:{aweme_id} | 当前:{current} | 缺量:{surplus_num} | '
                              f'今日额度:{room} | 应达:{P.due(rec)} | 本轮目标:{target}')
 
-                result = run_booster(aweme_id, target)
+                result = run_booster(aweme_id, target, day_cap)
                 did_work = True
                 show_message(f'第 {looper_num} 次 | {order_sn}', '上报完成',
                              f'接受:{result["accepted"]} | 尝试:{result["attempts"]} | '
@@ -635,8 +752,8 @@ while True:
                     zero_skip.pop(order_sn, None)
                     day_skip.pop(order_sn, None)
                     pace_skip.pop(order_sn, None)
-                elif result.get('day_capped') or U.video_room(aweme_id, VIDEO_DAY_CAP) <= LOSE_NUM:
-                    # 当日额度用尽不是故障：订单留着，明天同一视频还能再刷 1800 条。
+                elif result.get('day_capped') or U.video_room(aweme_id, day_cap) <= LOSE_NUM:
+                    # 当日额度用尽不是故障：订单留着，明天同一视频还能按同一口径再刷。
                     # 这里除了看 run() 的 day_capped 标记，还回查一次台账，避免并发
                     # 进程把这条视频的额度吃掉之后本进程还傻等着。
                     day_skip[order_sn] = U.next_day_start()
@@ -644,8 +761,8 @@ while True:
                     zero_skip.pop(order_sn, None)
                     show_message(f'第 {looper_num} 次 | {order_sn}', '当日额度用尽',
                                  f'视频 {aweme_id} 今日已入账 {U.video_day_used(aweme_id)} 条'
-                                 f'（上限 {VIDEO_DAY_CAP}），缺量 {left} 留到明日继续')
-                elif result['delta'] <= 0 and ceiling_hit(aweme_id, result):
+                                 f'（货号 {goods_key} 上限 {cap_text(day_cap)}），缺量 {left} 留到明日继续')
+                elif result['delta'] <= 0 and ceiling_hit(aweme_id, result, day_cap):
                     # 平台天花板：今天进过量、这轮零增量、本地额度还没满。
                     # 留单到零点，不计天数、不退单 —— 与播放端一致，缺量明天接着吃。
                     # 为什么还要 end_head：冲刺段没有退避，桶已经关了还按 180 一批
