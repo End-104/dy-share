@@ -36,13 +36,21 @@
     · SHARE_DEVICE_GAP=90    同一台设备两次分享最小间隔（代码缺省 300，launcher 设 90）。
                              设备池实测 7941 台 ÷ 90s = 88 请求/秒上限，30 个窗口
                              × 180 条 ÷ 230s 一轮 ÷ 计入率 35% ≈ 67 请求/秒需求，尚有余量。
-    · SHARE_ZERO_ROUNDS=4    零增量最多退避重试 4 轮（600/1200/2400/3600s）才退款
+    · SHARE_ZERO_BACKOFF=150 零增量第一档退避（原来 600）。退避单不占窗口：跳过即走，
+                             下一轮再来，窗口立刻去处理别的单。
+    · SHARE_PAGE_MAX=30      页池大小：页不再绑死在窗口上，谁闲谁领，干完让出来。
+    · SHARE_PAGE_SWEEP=6     一轮最多连领几页，全空才认「池里现在没活」。
+    · SHARE_PREFETCH=1       预取线程：跑当前单时把下一单的详情/占位/额度先取回来，
+                             换手从 8~20 秒降到 1 秒内。
+    · SHARE_IDLE_SLEEP=15    整池都没活时的整觉（秒），封顶就是一个 IDLE_SLEEP。
 """
 
+import collections
 import gc
 import json
 import os
 import sys
+import threading
 import time
 
 from dy_share import (DevicePool, InfoPool, ShareBooster, SHARE_FIELD,
@@ -55,7 +63,7 @@ import order_baseline as B
 
 function = FunctionApp()
 
-CODE_VERSION = '2026-11-17.6'   # 每次改动代码都要动这个号，窗口一开就能看出跑的是哪一份
+CODE_VERSION = '2026-11-18.1'   # 每次改动代码都要动这个号，窗口一开就能看出跑的是哪一份
 LOSE_NUM = 5                # 余量：分享按真实增量结算，留 5 条收口，留大等于白刷
 THREADS = int(sys.argv[3]) if len(sys.argv) > 3 and str(sys.argv[3]).isdigit() else 20
 # 每单每轮最长耗时（秒）。原来是 2400，给「1800 条满额单一次吃完」留的余量；
@@ -69,7 +77,7 @@ CHANNELS = ('1128', '32')   # 实测能承载 share_delta 的两条 Android 通�
 # 刷不动时只做退避重试与跨天等待，单子一直留在处理中；
 # 要让客户退钱只有两条路：平台后台人工操作，或客户自己在平台申请（平台侧推进 5→6→7）。
 # zero_rounds 退避链保留：它只负责「关窗时别烧设备」，与退单无关。
-ZERO_BACKOFF = float(os.environ.get('SHARE_ZERO_BACKOFF', 600))   # 零增量退避基数（秒），每轮翻倍，封顶 3600
+ZERO_BACKOFF = float(os.environ.get('SHARE_ZERO_BACKOFF', 150))   # 零增量退避基数（秒），每轮翻倍，封顶 3600
 
 # ---- 平台天花板：本地台账的数字不是平台额度，实测天花板 341~639 的视频打到顶之后
 # delta 会长时间归零，这不是死号也不是限流，是这条视频当天的记账预算用完了。
@@ -446,56 +454,356 @@ def promote_paid(looper_num) -> list:
     return pulled
 
 
+# ======================================================================
+# 调度层（页池 / 预取 / 让位）：把「等」从窗口里拿掉
+#
+# 老结构：一个窗口 = 一个固定页 + 一条一条串行跑，页里没单就睡。实测 30 个窗口
+# 里只有 9 个页上有单（997 的 pages=[50,50,50,50,4,0,…]），另外 21 个窗口整晚
+# 空转 —— 有效并行只有 9/30=30%。三个动作：
+#   1 页池共享：页不再绑死在窗口上。窗口领页 → 干完让出来 → 下一轮重新领，
+#     领不到就说明 30 页都被活窗口占着（这时才该睡），有效并行回到 30/30。
+#   2 预取队列：跑当前这单的时候，后台线程已经把下一单的详情/平台占位/视频额度
+#     预先取回来了，换手不再等那 5 次串行往返（实测 8~20 秒）。
+#   3 让位：撞额度上限、零增量、曲线未到点时立刻放掉视频归属和本机订单锁，
+#     同一视频的下一条单、以及同一个队列里的下一个窗口马上能接。
+# ======================================================================
+PAGE_MAX = int(os.environ.get('SHARE_PAGE_MAX', 30))       # 页池大小：一条货号有多少页可扫
+PAGE_SWEEP = int(os.environ.get('SHARE_PAGE_SWEEP', 6))    # 一轮最多连领几页，全空才认「池里没活」
+PAGE_CLAIM_TTL = float(os.environ.get('SHARE_PAGE_CLAIM_TTL', 900))   # 页归属多久没续租可回收（秒）
+IDLE_SLEEP = float(os.environ.get('SHARE_IDLE_SLEEP', 15))  # 整池都没活时的一个整觉（秒，封顶）
+PREFETCH_ON = str(os.environ.get('SHARE_PREFETCH', '1')).lower() not in ('0', 'false', 'no', 'off')
+PREFETCH_DEPTH = int(os.environ.get('SHARE_PREFETCH_DEPTH', 2))   # 预取队列深度（条）
+PREFETCH_TTL = float(os.environ.get('SHARE_PREFETCH_TTL', 300))   # 预取结果多久算过期（秒）
+OUR_PID = os.getpid()
+_fixed_page = str(sys.argv[2]) if len(sys.argv) > 2 and str(sys.argv[2]).isdigit() else '1'
+PWIN = max(1, min(PAGE_MAX, int(_fixed_page)))   # 本窗口首选页，也是旋转起手位
+
+
+def _page_path(page):
+    return os.path.join(BASE_DIR, 'page_{}.claim'.format(int(page)))
+
+
+def _page_read(page):
+    """读页归属：(pid, ts)。读不到就是 0/0 —— 当无人占用处理。"""
+    try:
+        with open(_page_path(page), 'r', encoding='utf-8') as fh:
+            rec = json.load(fh) or {}
+        return int(rec.get('pid') or 0), float(rec.get('ts') or 0.0)
+    except Exception:
+        return 0, 0.0
+
+
+def _page_write(page, exclusive=False):
+    """写页归属。exclusive=True 用 O_CREAT|O_EXCL 抢首占，抢不到返回 False。
+
+    为什么用文件而不是内存共享：30 个窗口是 30 个进程，跨进程只有磁盘能共享。
+    为什么写 tmp 再 os.replace：replace 在同一分区上是原子的，读者要么看到旧内容
+    要么看到新内容，不会读到半截 JSON。
+    """
+    tmp = '{}.{}.tmp'.format(_page_path(page), OUR_PID)
+    body = json.dumps({'pid': OUR_PID, 'ts': round(time.time(), 1)}).encode('utf-8')
+    try:
+        if exclusive:
+            fd = os.open(_page_path(page), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            try:
+                os.write(fd, body)
+            finally:
+                os.close(fd)
+            return True
+        with open(tmp, 'wb') as fh:
+            fh.write(body)
+        os.replace(tmp, _page_path(page))
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def claim_page(prefer=None):
+    """从页池领一页。成功返回页号；30 页都被活窗口占着时返回 None。
+
+    为什么从自己那一页开始找：launcher 给每个窗口的起始页本来就不同（p1..p30），
+    以自己那页起手，第一轮 30 个窗口正好把 30 页占满、互不重叠。
+    为什么失败要返回 None 而不是硬用自己的页：返回 None 说明此刻池里没有无主页，
+    这一圈真该睡 —— 硬用自己的页会让 21 个空页窗口回到空转老路。
+    """
+    start = int(prefer or PWIN)
+    now = time.time()
+    for _i in range(PAGE_MAX):
+        page = (start - 1 + _i) % PAGE_MAX + 1
+        owner, ts = _page_read(page)
+        if owner == OUR_PID:
+            _page_write(page)                  # 续租，别让 TTL 把自己这页收走
+            return page
+        if owner and _pid_alive(owner) and (now - ts) <= PAGE_CLAIM_TTL:
+            continue                           # 别人正拿着，看下一页
+        if owner:
+            if _page_write(page):              # 占位进程已经不在了：直接接管
+                return page
+            continue
+        if _page_write(page, exclusive=True):  # 无主页：抢首占
+            return page
+    return None
+
+
+def release_page(page):
+    """让页：只删自己那一份，别人的占位文件不动。"""
+    if page is None:
+        return False
+    owner, _ts = _page_read(page)
+    if owner != OUR_PID:
+        return False
+    try:
+        os.remove(_page_path(page))
+        return True
+    except Exception:
+        return False
+
+
+def prepare_order(order):
+    """一条单的网络前置一次做完：详情 → 平台占位 → 换 ID → 查视频额度。
+
+    返回 dict，主循环只认字段，不再自己发这几个请求：
+        ok 能不能接着刷 | kind ok/state/taken/bad_id/capped/error
+        detail 详情对象 | aweme_id 19 位视频 ID | room 该视频今日剩余条数
+        day_cap 本单货号日限 | goods_key 本单货号
+    为什么单独抽出来：这四步彼此独立、又不依赖 booster，抽出来才能搬到后台线程
+    预取。原地不动的部分（基线、曲线、上报、结算）必须留在主线程串行。
+    """
+    sn = str(order.get('orderSN') or '')
+    goods_key = str(order.get('_goods') or order.get('goodsSN')
+                    or (GOODS_LIST[0] if GOODS_LIST else ''))
+    day_cap = DAY_CAP_BY_GOODS.get(goods_key, int(VIDEO_DAY_CAP))
+    rec = {'ok': False, 'kind': 'error', 'reason': '', 'detail': {}, 'aweme_id': '',
+           'room': 0, 'day_cap': day_cap, 'goods_key': goods_key, 'ts': time.time()}
+    try:
+        detail = function.get_order_detail(sn)
+    except Exception as exc:
+        rec['reason'] = '详情接口异常 {}'.format(str(exc)[:80])
+        return rec
+    if not detail or int((detail or {}).get('state') or 0) != 2:
+        rec['kind'] = 'state'
+        rec['reason'] = '详情状态非处理中'
+        rec['detail'] = detail or {}
+        return rec
+    rec['detail'] = detail
+    try:
+        state = int(function.upload_server_content('execState?order_sn={}'.format(sn)))
+    except Exception:
+        state = 2                              # 查不到就按「没被领走」继续，交给本机锁兜底
+    if state == 1:
+        rec['kind'] = 'taken'
+        rec['reason'] = '平台侧已被领取'
+        return rec
+    try:
+        aweme_id = str(function.upload_server_content(
+            'execute?order_sn={}&exec_update=1'.format(sn)) or '').strip()
+    except Exception as exc:
+        aweme_id = ''
+        rec['reason'] = 'execute 异常 {}'.format(str(exc)[:60])
+    if len(aweme_id) != 19:
+        aweme_id = resolve_aweme_id(order_link(detail) or order_link(order) or '')
+    if len(aweme_id) != 19:
+        rec['kind'] = 'bad_id'
+        rec['reason'] = rec['reason'] or '取不到视频ID'
+        return rec
+    rec['aweme_id'] = aweme_id
+    room = U.video_room(aweme_id, day_cap)
+    rec['room'] = room
+    if room <= LOSE_NUM:
+        rec['kind'] = 'capped'
+        rec['reason'] = '视频 {} 今日额度已用尽'.format(aweme_id)
+        return rec
+    rec['ok'] = True
+    rec['kind'] = 'ok'
+    return rec
+
+
+class Prefetcher(object):
+    """后台预取线程：主线程跑 booster 的时候，它把下一条候选单的前置请求先打出去。
+
+    为什么值得单开线程：换手要 8~20 秒，其中 5 次串行往返占了绝大部分，而这 5 次
+    与 booster 完全无依赖。放后台打，主线程到点直接取结果，换手降到 1 秒内。
+    线程安全的前提（已核对）：function 里只有一个 httpx.Client（自身线程安全，
+    keepalive 300）；used_store 用 threading.local() 每线程一条连接；订单锁和
+    视频锁只在主线程里抢，后台线程只读不写上报。
+    """
+
+    def __init__(self, depth=2, ttl=300.0):
+        self.depth = max(1, int(depth))
+        self.ttl = float(ttl)
+        self._ready = {}
+        self._queue = collections.deque()
+        self._cond = threading.Condition()
+        self._stop = False
+        self.stat = {'feed': 0, 'prep': 0, 'hit': 0, 'stale': 0, 'fail': 0, 'busy': 0}
+        self._th = threading.Thread(target=self._run, name='share-prefetch', daemon=True)
+        self._th.start()
+
+    def feed(self, orders):
+        """主线程把后面的候选单塞进来；队列满了就丢，不阻塞主线程。"""
+        if not orders:
+            return
+        now = time.time()
+        with self._cond:
+            for sn in [k for k, v in self._ready.items() if now - v.get('ts', 0) > self.ttl]:
+                self._ready.pop(sn, None)
+                self.stat['stale'] += 1
+            seen = set(self._ready) | set(item[0] for item in self._queue)
+            for order in orders:
+                sn = str(order.get('orderSN') or '')
+                if not sn or sn in seen:
+                    continue
+                if len(self._ready) + len(self._queue) >= self.depth:
+                    break
+                self._queue.append((sn, order))
+                seen.add(sn)
+                self.stat['feed'] += 1
+            self._cond.notify()
+
+    def take(self, order_sn):
+        """取某条单的预取结果；没有或已过期返回 None（主线程就地同步做一遍）。"""
+        with self._cond:
+            prep = self._ready.pop(str(order_sn), None)
+        if not prep:
+            return None
+        if time.time() - prep.get('ts', 0) > self.ttl:
+            self.stat['stale'] += 1
+            return None
+        self.stat['hit'] += 1
+        return prep
+
+    def _run(self):
+        while True:
+            with self._cond:
+                while not self._queue and not self._stop:
+                    self._cond.wait(1.0)
+                if self._stop:
+                    return
+                sn, order = self._queue.popleft()
+            try:
+                if not DRY and order_busy(sn):
+                    self.stat['busy'] += 1
+                    continue
+                prep = prepare_order(order)
+            except Exception:
+                self.stat['fail'] += 1
+                continue
+            with self._cond:
+                # 只缓存有结论的结果：瞬时异常（error）不缓存，否则一条网络抖动
+                # 会让这条单在 TTL 内被跳过 300 秒。
+                if prep.get('ok') or prep.get('kind') in ('state', 'taken', 'capped', 'bad_id'):
+                    self._ready[sn] = prep
+                    self.stat['prep'] += 1
+                else:
+                    self.stat['fail'] += 1
+
+
+def _lookahead(orders, idx, depth):
+    """从当前位置往后挑 depth 条「现在没有退避」的单交给预取线程。
+
+    为什么先过一遍本地跳过表：预取是有代价的（一次 execute 就动了平台状态），
+    把已经知道在退避里的单塞进去纯属白打接口。
+    """
+    if depth <= 0:
+        return []
+    now = time.time()
+    picked = []
+    for order in orders[idx + 1:]:
+        if len(picked) >= depth:
+            break
+        sn = str(order.get('orderSN') or '')
+        if not sn:
+            continue
+        if (day_skip.get(sn, 0) > now or zero_skip.get(sn, 0) > now
+                or pace_skip.get(sn, 0) > now):
+            continue
+        if not DRY and order_busy(sn):
+            continue
+        picked.append(order)
+    return picked
+
+
+def pull_orders(tries=None):
+    """按页池领页拉单。领到有单的页就留下，连领几页都空返回 (None, [])。
+
+    为什么空页要立刻让出来：一个窗口抱着一页空页，等于把 1/30 的并行度钉死；
+    让出来之后下一轮它可能领到一页有 50 条单的页，池子里的活就能自己流向闲窗口。
+    """
+    tries = PAGE_SWEEP if tries is None else max(1, int(tries))
+    for _ in range(tries):
+        page = claim_page()
+        if page is None:
+            return None, []
+        function.page = str(page)
+        orders = []
+        for _goods in GOODS_LIST:
+            part = function.get_order_list('2', goods_sn=_goods) or []
+            for _o in part:
+                _o['_goods'] = _goods
+            orders.extend(part)
+        if orders:
+            return page, orders
+        release_page(page)
+    return None, []
+
+
+# 预取线程只在正常接单时起：dry 是演练，不能有后台线程替它动平台状态。
+PF = Prefetcher(PREFETCH_DEPTH, PREFETCH_TTL) if (PREFETCH_ON and not DRY) else None
+print('[分享端] 调度 | 页池 {} | 首选页 {} | 连领 {} 页 | 预取 {} 深 {} | 整觉 {}s | '
+      '零增量退避 {}s 起 | 页归属 TTL {}s'.format(
+          PAGE_MAX, PWIN, PAGE_SWEEP,
+          'on' if PF else 'off', PREFETCH_DEPTH if PF else 0,
+          int(IDLE_SLEEP), int(ZERO_BACKOFF), int(PAGE_CLAIM_TTL)))
+
+
 while True:
     try:
         looper_num += 1
-        # 一个窗口吃多个货号：各自拉一遍再合并，单货号时行为与原来完全一致
-        order_list = []
-        for _goods in GOODS_LIST:
-            _part = function.get_order_list('2', goods_sn=_goods)
-            if _part:
-                # 每张单都记下自己是哪个货号拉回来的，后面对账要用它决定日限。
-                for _o in _part:
-                    _o['_goods'] = _goods
-                order_list.extend(_part)
-        # 接单放在拉列表之后、统计数量之前：这一圈新接进来的单直接进本次队列，
-        # 不用等下一圈（一圈可能二十分钟）。dry 模式不改平台状态，跳过。
+        # 页池领页：不再让「一个窗口 = 一个固定页」把并行度钉在有单的页数上。
+        # 领到的页这一轮归本窗口；页里没有活可干就把页让出去，下一轮重新领。
+        page, order_list = pull_orders()
+        # 接单是全局动作（把 state=1 的单置 2），跟本窗口拿到哪页无关：
+        # 池子被占满时也要照做，否则已付款单会一直挂在 1 上没人开工。
         if AUTO_ACCEPT and not DRY:
+            if page is None:
+                function.page = str(PWIN)
             order_list.extend(promote_paid(looper_num))
         # 订单数量这行不再每圈打：数量没变就 30 秒一次，数量一变立刻打。
         # 每圈都打会在全单入退避时刷成每秒好几行，真看日志时反而找不到有用的行。
         if len(order_list) != last_list_n or (time.time() - last_list_ts) >= LIST_LOG_EVERY:
-            show_message(f'第 {looper_num} 次', f'订单数量({"+".join(GOODS_LIST)})', str(len(order_list)))
+            show_message(f'第 {looper_num} 次',
+                         f'订单数量({"+".join(GOODS_LIST)}) | 页:{page if page else "无"}',
+                         str(len(order_list)))
             last_list_n = len(order_list)
             last_list_ts = time.time()
         if len(order_list) == 0:
-            # 30 个窗口各自错开一位：以前固定 %10，空页的十几个窗口同时砸在同
-            # 一个随机页上，撞单率 100%，日志里全是「窗口忙」。
-            # 错开之后同一页最多撞 ceil(30/10)=3 个窗口，抢锁有先后、有活干。
-            _win = int(function.page) if str(function.page).isdigit() else 1
-            page = (int(time.time() * 1000) // 1000 + _win) % 10
-            for _goods in GOODS_LIST:
-                _part = function.get_order_handler(page, goods_sn=_goods)
-                if _part:
-                    for _o in _part:
-                        _o['_goods'] = _goods
-                    order_list.extend(_part)
-            if len(order_list) == 0:
-                del order_list
-                gc.collect()
-                time.sleep(TIME_WAIT)
-                continue
-            show_message(f'第 {looper_num} 次', f'订单页:{page} | 订单数量', str(len(order_list)))
+            # 连领 PAGE_SWEEP 页都空，或者 30 页都被活窗口占着：这一圈是真没活。
+            # 睡一个整觉（封顶 IDLE_SLEEP）再看，别一秒转两圈去灌平台订单接口。
+            del order_list
+            gc.collect()
+            if DRY:
+                show_message(f'第 {looper_num} 次', '演练结束', '整池无单，退出演练')
+                raise SystemExit(0)
+            time.sleep(IDLE_SLEEP)
+            continue
         order_list.reverse()
 
         did_work = False           # 本页有没有真正发出过上报，用来决定这一圈要不要睡
+        live_candidates = 0        # 过了本地跳过表的单数；为 0 说明这页现在全是退避单
 
-        for order in order_list:
+        for _idx, order in enumerate(order_list):
             try:
                 start_time = time.time()
                 order_sn = str(order['orderSN'])
                 order_num = int(order['number'])
                 start_num = int(order['startNum'])
+                _aweme = ''            # 让位与异常分支都要放视频锁，那时 aweme_id 未必已赋值
                 # 本单货号决定它的单视频日限：1594 = 1200，997 = 0（不限）。
                 # 必须在 get_order_detail 覆盖 order 之前取出来，详情接口不带 _goods 标记。
                 goods_key = str(order.get('_goods') or order.get('goodsSN')
@@ -544,37 +852,56 @@ while True:
                     del order
                     continue
 
-                order = function.get_order_detail(order_sn)
-                if int(order['state']) != 2:
-                    show_message(f'第 {looper_num} 次 | {order_sn}', '状态异常', '跳过')
+                # 这条单本地确实有活可干；交给预取线程往后看几条，同时尝试取本条已预取的
+                # 结果。为什么先 feed 再 take：feed 是给「下一条」的，take 是取「这一条」的。
+                # 先喂后取，下一条的 5 次往返正好落在本条 booster 跑的那几十秒里。
+                live_candidates += 1
+                prep = None
+                if PF:
+                    PF.feed(_lookahead(order_list, _idx, PREFETCH_DEPTH))
+                    prep = PF.take(order_sn)
+                if not prep:
+                    prep = prepare_order(order)     # 没预取到就地同步做一遍，行为与老版一致
+                _aweme = prep.get('aweme_id') or ''
+                _kind = prep.get('kind')
+                if _kind == 'state':
+                    if (time.time() - skip_log_ts.get(order_sn, 0)) >= SKIP_LOG_EVERY:
+                        skip_log_ts[order_sn] = time.time()
+                        show_message(f'第 {looper_num} 次 | {order_sn}', '状态异常', '跳过')
                     del order
                     continue
-
-                # 平台侧占位锁：返回 1 说明别的进程已经在跑这单
-                if int(function.upload_server_content(f'execState?order_sn={order_sn}')) == 1:
-                    show_message(f'第 {looper_num} 次 | {order_sn}', '已被领取', '跳过')
+                if _kind == 'taken':
+                    if (time.time() - skip_log_ts.get(order_sn, 0)) >= SKIP_LOG_EVERY:
+                        skip_log_ts[order_sn] = time.time()
+                        show_message(f'第 {looper_num} 次 | {order_sn}', '已被领取', '跳过')
                     del order
                     continue
-
-                aweme_id = function.upload_server_content(f'execute?order_sn={order_sn}&exec_update=1')
-                if len(aweme_id) != 19:
-                    aweme_id = resolve_aweme_id(order_link(order))
-                if len(aweme_id) != 19:
+                if _kind == 'bad_id':
                     show_message(f'第 {looper_num} 次 | {order_sn}', '订单异常',
                                  function.update_order_state(order_sn, 3, 'aweme_id错误'))
                     del order
                     continue
-
                 # 单视频每日上限前置检查：额度已经用满就不必读计数、不必开线程，
                 # 直接把单子排到明天零点，省一次网络往返也省一批设备。
-                room = U.video_room(aweme_id, day_cap)
-                if room <= LOSE_NUM:
+                if _kind == 'capped':
                     day_skip[order_sn] = U.next_day_start()
                     show_message(f'第 {looper_num} 次 | {order_sn}', '当日额度已用尽',
-                                 f'视频 {aweme_id} 今日已入账 {U.video_day_used(aweme_id)}'
-                                 f'/{cap_text(day_cap)}（货号 {goods_key}），明日 00:00 后自动续刷')
+                                 f'视频 {_aweme} 今日已入账 {U.video_day_used(_aweme)}'
+                                 f'/{cap_text(prep.get("day_cap"))}（货号 {prep.get("goods_key")}），'
+                                 f'明日 00:00 后自动续刷')
                     del order
                     continue
+                if not prep.get('ok'):
+                    if (time.time() - skip_log_ts.get(order_sn, 0)) >= SKIP_LOG_EVERY:
+                        skip_log_ts[order_sn] = time.time()
+                        show_message(f'第 {looper_num} 次 | {order_sn}', '前置失败',
+                                     (prep.get('reason') or '-')[:80])
+                    del order
+                    continue
+                aweme_id = _aweme
+                day_cap = prep.get('day_cap') or day_cap
+                goods_key = str(prep.get('goods_key') or goods_key)
+                room = int(prep.get('room') or 0)
 
                 current = current_share(order_sn, aweme_id, start_num)
                 # startNum=0 不是「起点是 0」，是这个货号的平台不下发基线（1594/997 实测全 0）。
@@ -704,6 +1031,9 @@ while True:
                 if target <= 0:
                     show_message(f'第 {looper_num} 次 | {order_sn}', '本轮不用刷',
                                  f'当前:{current} | 缺量:{surplus_num} | 额度:{room}')
+                    # 让位：一枪不放就不能占着视频归属，否则同视频的下一条单
+                    # 整轮都在「同视频排队」里空转，白占一个窗口。
+                    B.video_release(aweme_id, order_sn)
                     release_order(order_sn)
                     del order
                     continue
@@ -759,6 +1089,9 @@ while True:
                     day_skip[order_sn] = U.next_day_start()
                     zero_rounds[order_sn] = 0
                     zero_skip.pop(order_sn, None)
+                    # 让位：这条视频今天再也吃不下量，视频归属必须立刻放开，
+                    # 否则同视频的另一条单会在 30 个窗口里排队排到天亮。
+                    B.video_release(aweme_id, order_sn)
                     show_message(f'第 {looper_num} 次 | {order_sn}', '当日额度用尽',
                                  f'视频 {aweme_id} 今日已入账 {U.video_day_used(aweme_id)} 条'
                                  f'（货号 {goods_key} 上限 {cap_text(day_cap)}），缺量 {left} 留到明日继续')
@@ -772,6 +1105,7 @@ while True:
                     day_skip[order_sn] = U.next_day_start()
                     zero_rounds[order_sn] = 0
                     zero_skip.pop(order_sn, None)
+                    B.video_release(aweme_id, order_sn)   # 天花板：视频归属立刻让出去
                     show_message(f'第 {looper_num} 次 | {order_sn}', '当日天花板',
                                  f'今日入账 {U.video_day_used(aweme_id)} 条即停 | '
                                  f'缺量 {left} 留到明日 | 不退单，等次日窗口重开')
@@ -788,10 +1122,15 @@ while True:
                                      f'{max(0, order_num - exec_num)} 条')
                     rounds = zero_rounds.get(order_sn, 0) + 1
                     zero_rounds[order_sn] = rounds
-                    # 600/1200/2400/3600 封顶：纯退避。轮数只用于日志和 3600 秒上限，
+                    # 150/300/600/1200/2400/3600 封顶：纯退避。轮数只用于日志和 3600 秒上限，
                     # 攒到多少轮都不退单，和播放端「一直重试」是同一套语义。
+                    # 基数从 600 降到 150：退避单本来就不占窗口（跳过即走），
+                    # 卡 600 秒只是让这条单在本页白排一小时，早一档回来早一轮吃到量。
                     backoff = min(ZERO_BACKOFF * (2 ** (rounds - 1)), 3600)
                     zero_skip[order_sn] = time.time() + backoff
+                    # 让位：零增量说明这条视频此刻吃不下量，视频归属立刻放开，
+                    # 让同视频的另一条单（或另一个窗口）用它自己的节奏去试。
+                    B.video_release(aweme_id, order_sn)
                     # 开头时间只记第一次，中间零星吃到几条会清空重算，避免把间断的零增量
                     # 攒成一段「连续挂死」
                     zero_since.setdefault(order_sn, time.time())
@@ -808,6 +1147,9 @@ while True:
                         if P.in_head(rec):
                             # 桶顶回来了：冲刺段没有退避，继续冲只会白烧设备，直接转尾段
                             P.end_head(order_sn, 'throttled')
+                        # 让位：视频已经在限流，本单这会儿再占着归属只是空转，
+                        # 放出去让同视频的下一条单去试，谁先吃到量算谁的。
+                        B.video_release(aweme_id, order_sn)
                         show_message(f'第 {looper_num} 次 | {order_sn}', '视频限流',
                                      f'已入账 {result["delta"]} 条，剩余留单下一轮继续')
 
@@ -821,18 +1163,34 @@ while True:
                     release_order(order_sn)
                 except Exception:
                     pass
+                # 异常退出也算一次让位：视频归属不放开，同视频的其他单会一直排队。
+                try:
+                    if _aweme:
+                        B.video_release(_aweme, order_sn)
+                except Exception:
+                    pass
         del order_list
         gc.collect()
+        # 这一页的单全在退避里（或者全被别人拿着）：把页让出去，下一轮重新领。
+        # 不让页的话，一页全是退避单的窗口会整晚钉在这一页上，把 1/30 的并行度耗空。
+        if live_candidates == 0:
+            release_page(page)
+        if did_work:
+            # 干过活就立刻领下一页：换手速度就是这么来的，处理完一单马上接下一单，
+            # 不在两单之间睡。页池会把它领到真正还有单的地方去。
+            continue
         # 整页单子都被节奏层挡回来时，按最近的到点时间睡一觉。
         # 为什么要睡：加了曲线以后，一圈里大部分单子都是「未到点」，
         # 不睡就会以每秒十几圈的速度空打平台订单接口，既没意义又容易被限。
         now = time.time()
         soon = [t - now for t in list(pace_skip.values()) + list(zero_skip.values()) + list(day_skip.values())
                 if t > now]
-        # 一圈什么都没干就至少睡 5 秒：全单都在零增量/曲线/日额度退避里时，
-        # 原来 soon 为空会一脚不睡地空转，一秒能转两圈，日志和平台接口一起被灌满。
-        if not did_work:
-            time.sleep(5.0 if not soon else min(60.0, max(5.0, min(soon))))
+        # 一圈什么都没干：全单都在零增量/曲线/日额度退避里时按最近的到点时间醒，
+        # 封顶一个整觉 IDLE_SLEEP（15 秒）。原来固定 5~60 秒，退避单把窗口按在原地，
+        # 现在退避单不占窗口，整池都没活才该睡，而且只睡一个整觉就重新扫页。
+        wait = IDLE_SLEEP if not soon else min(IDLE_SLEEP, max(1.0, min(soon)))
+        # 页已经让出去了，这一觉可以放心睡满：别的窗口会接着吃这页上的单。
+        time.sleep(wait)
         if DRY:
             show_message(f'第 {looper_num} 次', '演练结束', '一页跑完即退出，未改任何订单状态')
             raise SystemExit(0)
