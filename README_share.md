@@ -10,7 +10,8 @@
 | `share_cli.py` | 单条视频命令行入口 |
 | `verify_share.py` | 真值验证器：拉官方 `statistics.share_count` 做前后对比，判定是否真的入账 |
 | `applog_replay.py` | AppLog 埋点重放通道（备用，字段被改时用） |
-| `ayk_dy_share_handler.py` | 供应商分享量订单端：拉单→换ID→上报→回写→完成/退款，支持 `dry` 演练 |
+| `ayk_dy_share_handler.py` | 供应商分享量订单端：拉单→接单→换ID→上报→回写→到期结算（完成/退款），退款口径见下文「交付与退款口径」，支持 `dry` 演练 |
+| `order_settle.py` | 结算账本与唯一判据：日期切片、当日额度、到期时间、退款条数。数据落 `settle/s_<订单号>.json`，跨 30 个进程共享 |
 | `start_share.bat` | 一次性拉起 1594 / 997 共 12 个接单进程（每货号 6 页，每单 24 线程） |
 | `aid_scan.py` | 扩桶扫描：按 aid × license 打一轮 stats，标出身份能过网关（拿非空回执）的 aid，`--emit-profile` 直接输出可粘的 `PROFILES` 条目 |
 | `aid_probe.py` | 单 aid 点桶：只看 `share_count` 是否涨，涨了才写 `aid_alive.json` |
@@ -288,18 +289,38 @@ start_share.bat
 | 1 | 拉单 | `get_order_list('2')` | state=2 的订单数组，空则 5 秒后重试 |
 | 2 | 读详情 | `get_order_detail(order_sn)` | 订单对象，非 state=2 直接跳过 |
 | 3 | 抢锁 | `execState?order_sn=..` | 返回 `1` = 已被别的进程领走，跳过 |
-| 4 | 换 ID | `execute?order_sn=..&exec_update=1` | 19 位 aweme_id；失败退回本地解析，再失败置 state=3 |
-| 5 | 读基数 | `share_count(aweme_id)` | 当前真实分享量；读不到用 `execNum` 折算 |
+| 4 | 换 ID | `execute?order_sn=..&exec_update=1` | 19 位 aweme_id；失败退回本地解析，仍然拿不到就按 0 交付全额退款（置 7，不再挂 state=3） |
+| 5 | 读基数 | `share_count(aweme_id)` | 当前真实分享量，写入账本 `base`；读不到用 `execNum` 折算 |
 | 6 | 算缺量 | `order_num - (current - start_num)` | 缺量 ≤ 5 直接置 4 完成 |
 | 7 | 上报 | `ShareBooster.run()` | accepted / delta / throttled / reason |
-| 8 | 回写 | `update?exec_state=1&exec_num=<delta>` | 平台记录本单真实执行量（用 delta，不用 accepted） |
-| 9 | 结算 | 再读 `share_count` → `update_order_progress` | 完成(4) / 退款(7) / 留单下一轮 |
+| 8 | 回写 | `update?exec_state=1&exec_num=<累计净增>` | 平台进度写「当前分享量 − 基线」，与退款口径同源；不写本批 delta，也不写 accepted |
+| 9 | 结算 | `order_settle.decide()` → 完成(4) / 退款(7) | 到期时刻统一判定，见下文「交付与退款口径」 |
 
 三个和播放端一致的关键设计：
 
-1. **回写用真实增量**：`exec_num` 写 `delta`（服务端计数差），不写本地 `accepted`。分享报文被服务端「收下但不计数」时，写 accepted 会虚高，订单永远差最后几条。
+1. **回写用真实增量**：`exec_num` 写「累计净增 = 当前 share_count − 基线」，不写本地 `accepted`，也不写本批 delta。分享报文被服务端「收下但不计数」时，写 accepted 会虚高；写本批 delta 在覆盖语义下会让平台进度永远停在最后一批，两种都跟退款口径对不上。
 2. **等落账再结算**：`ShareBooster.run()` 收工后最多等 `SETTLE_SECONDS=60` 秒轮询，`share_count` 有 30–90 秒回填延迟，立刻读会读到旧值。
-3. **零增量退避**：同一单连续零增量按 600 / 1200 / 2400 / 3600 秒退避重试，满 4 轮才按剩余量退款并置 state=7；中途只要有一轮进账就清零计数，继续跑。
+3. **零增量不再直接退款**：同一单连续零增量按 600 / 1200 / 2400 / 3600 秒退避重试，只影响下一批的间隔，不触发退款；退不退款只由 `order_settle.decide()` 在到期时刻判一次。1161 条误退就是「零增量满 4 轮就退」这条老逻辑造成的。
+
+## 交付与退款口径（2026-11-24 起）
+
+一句话：**下单多少条，到日子按「真实入账多少条」结账，差额退钱；差额不退到次日，当天结清。**
+
+| 下单量 | 排期 | 什么时候结 | 退多少 |
+|---|---|---|---|
+| ≤ 1200 | 当天一天 | 当天 `SHARE_SETTLE_AFTER`（默认 22:30） | `下单量 − 当天真实净增` |
+| > 1200 | `ceil(下单量/1200)` 天，下单时定死 | 只有末日结账，中间天只吃额度 | `下单量 − 累计真实净增` |
+
+细则：
+
+1. **按真实净增**：入账量只认官方 `statistics.share_count` 相对本单基线的净增（`回执 ≠ 计入`，回执虚高 30%~60%）。基线由 `order_baseline` 落盘，账本 `base` 与之对齐。
+2. **单视频每日上限 1200**：按视频（`aweme_id`）算，不按货号算；1594 与 997 落在同一个 `aweme_id` 上共享这 1200，先到先得。997 的配置 `video_day_cap=0` 表示不限，但排期切片仍按 `SHARE_SLICE_CAP=1200` 走。
+3. **切片**：`days = ceil(总下单/1200)`，切片为 `[1200]×(days−1) + [余数]`。第 k 天的额度 = 第 k 片减去当天已入账部分。
+4. **不跨天结转**：单日单当天结清；多日单只有末日结，中间天刷不够也不提前退、不顺延。
+5. **提前结的两种情况**：视频被下架/设私密/读不到（`filter_detail.core_dep`，或连续 3 次 `share_count` 失败）当场按已交付量结；或者 `credited == 0` 且已到期。
+6. **到期判定**：单日单在进单当天 `SETTLE_AFTER`；多日单在 `进单日 + days − 1` 那天的 `SETTLE_AFTER`。兜底在次日起 `GRACE_HOURS=6` 小时，扫描器每 `SETTLE_EVERY=120` 秒跑一次，`SHARE_SETTLE_BATCH=5` 条一批，且不依赖订单是否还在列表里（被推进 `day_skip` 的单照样会被扫到）。
+7. **重报防护三重**：账本锁 `settle/.lock_<订单号>.lck`、落盘标记 `refund_reported` / `refund_ts` / `refund_n`、上报前查 `get_order_detail` 已在 5/6/7 就跳过。
+8. **退款只报条数**：本地调 `/api/supplier/order/v2/refund`，body `{'orderSN','number','remarks'}`，钱由平台按条数原路退（原路或退余额）。本地不碰金额、不碰商户凭证。
 
 演练模式不动任何订单状态，只解析链接、试打 3–10 条、比对前后计数：
 
@@ -373,9 +394,15 @@ python share_queue.py                    # 正式跑，结果回写同一文件
 | `SHARE_DAY_CAP` | `1800` | 单视频每自然日入账上限；`0` = 不限（只剩设备池约束） |
 | `SHARE_DEVICE_GAP` | `90` | 同一台设备两次分享的最小间隔（秒）。设备池实测 7941 台（`devices34` 1688 + `pool_extra` 6253 去重）÷ 90s = 88 请求/秒上限；30 窗口的需求约 67 请求/秒（180 条 ÷ 230s × 30 ÷ 计入率 35%），计入率掉到 28% 时需求 84 请求/秒，仍在 88 以内。设 `0` 会让 `_pick()` 走无间隔分支，几秒内对同一台设备连派几十条，必被判机器 |
 | `SHARE_ROUND_CHUNK` | `180` | 单轮最多吃多少条，吃完回队尾；`0` = 一轮吃满目标 |
-| `SHARE_ZERO_ROUNDS` | `4` | 零增量退避重试轮数，超了才退款 |
+| `SHARE_ZERO_ROUNDS` | `4` | 零增量退避重试轮数。只决定重试间隔，不再触发退款（退款见 `order_settle`） |
 | `SHARE_STALL_PAUSE` | `90` | 计数停滞时暂停发请求、等落账的秒数 |
 | `SHARE_STALL_ROUNDS` | `6` | 暂停几轮计数仍不回填才收工 |
+| `SHARE_SLICE_CAP` | `1200` | 排期切片大小，也是 `video_day_cap=0`（不限）货号的每日额度 |
+| `SHARE_SETTLE_AFTER` | `22:30` | 到期日几点开始结算，格式 `HH:MM` |
+| `SHARE_SETTLE_GRACE_HOURS` | `6` | 过了结算时刻还没结的兜底宽限，超了下一圈强制结 |
+| `SHARE_SETTLE_EVERY` | `120` | 结算扫描间隔（秒），挂在主循环上，与打量并行 |
+| `SHARE_SETTLE_BATCH` | `5` | 单圈最多结算几条，防止退款接口抖动时把整圈拖住 |
+| `SHARE_SETTLE_FAIL_DEAD` | `3` | `share_count` 连续读不到几次就按已知量强制结算 |
 
 ### 池子与台账运维
 
@@ -998,9 +1025,10 @@ python bucket_family_test.py 7706079479723465882 --first 32 --second 1768 --prob
 就判当日天花板，`day_skip` 推到零点，不动 `zero_rounds`。连续 3 天触顶（`SHARE_MAX_CAP_DAYS`）
 才退款，且一天只计一次（`CAP_DAY_OF` 按自然日去重，防重启把三天额度一天耗光）。
 
-零增量分支另有一处放宽：已经进过量的单子（`exec_num > 0`）退款门槛 ×2，
-因为零点刚过、窗口还关着的时候它也会连续零增量，600/1200/2400/3600×4 ≈ 6 小时
-才够等到下一次窗口重开。
+**2026-11-24 起这条也拆掉了**：零增量退避只决定「下一批隔多久再打」，退不退款完全交给
+`order_settle.decide()` 在到期时刻判一次。触顶只意味着今天打不动了，明天接着打；
+真到末天还差多少，才按差额退。上面 1022 行那条「退款门槛 ×2」一并作废——
+它和 `ceiling_hit()` 都是为「零增量能退款」这个前提打的补丁，前提没了，补丁也不该留。
 
 **3 `share_queue.py`：剩余量改成自减**
 

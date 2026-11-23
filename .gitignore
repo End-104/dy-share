@@ -41,4 +41,9 @@ order_*.lock
 baseline/
 intake_state.json
 pace_state.json
+*.claim
+
+# 退款与交付台账：每单一个文件，含真实订单号、抖音视频 ID、已交付条数与退款判定。
+# 属于客户数据而不是代码，推上去等于把买家的单子公开，只留在本机。
+settle/
 

@@ -646,8 +646,13 @@ STAT_KEYS = ('play_count', 'share_count', 'digg_count', 'comment_count',
              'download_count', 'forward_count', 'collect_count')
 
 
-def read_statistics(device: dict, aweme_id: str):
-    """用给定的设备读一次 detail，返回 statistics 字典；读不到返回 None。"""
+def _detail_body(device: dict, aweme_id: str):
+    """用给定的设备读一次 detail，返回整个响应 json；读不到返回 None。
+
+    为什么留整包：视频被删时 aweme_detail 是 null，删的原因只出现在
+    filter_detail.filter_reason（status_deleted / status_self_see /
+    status_prohibited ...）。只取 aweme_detail 就永远分不清「删了」和「抖了」。
+    """
     try:
         ticket = int(time.time() * 1000)
         ts = int(time.time())
@@ -676,10 +681,112 @@ def read_statistics(device: dict, aweme_id: str):
         res = http_client.get(url, headers=headers, timeout=TIME_WAIT)
         if res.status_code != 200 or not res.text.strip():
             return None
-        stats = (res.json().get('aweme_detail') or {}).get('statistics') or {}
-        return {k: stats[k] for k in STAT_KEYS if k in stats} or None
+        return res.json()
     except Exception:
         return None
+
+
+def _detail_raw(device: dict, aweme_id: str):
+    """只要 aweme_detail 本体；视频不在了（null）返回 None。"""
+    body = _detail_body(device, aweme_id)
+    if not isinstance(body, dict):
+        return None
+    return body.get('aweme_detail') or None
+
+
+def read_statistics(device: dict, aweme_id: str):
+    """用给定的设备读一次 detail，返回 statistics 字典；读不到返回 None。
+
+    保持原语义不变：视频被删时这里照样返回 None，probe_alive 靠它判设备死活，
+    语义一改就会把好设备当死号。判定视频存亡走 video_state，那个读 status。
+    """
+    raw = _detail_raw(device, aweme_id)
+    if not raw:
+        return None
+    stats = raw.get('statistics') or {}
+    return {k: stats[k] for k in STAT_KEYS if k in stats} or None
+
+
+_GONE_CACHE = {}
+GONE_TTL = float(os.environ.get('SHARE_GONE_TTL', 300))
+# filter_reason 是 aweme_detail 为 null 时唯一的线索。实测不存在的 id 返回 core_dep，
+# 抖音对「删了 / 不存在 / 不可见」统一给这个兜底值；带 status_ 前缀的才是明确结论。
+_GONE_REASON = {
+    'status_deleted': 'deleted',
+    'status_not_exist': 'deleted',
+    'core_dep': 'deleted',
+    'status_self_see': 'private',
+    'status_friend_see': 'private',
+    'status_prohibited': 'prohibited',
+}
+
+
+def video_state(aweme_id: str, tries: int = 3) -> str:
+    """判定视频当前状态：alive / deleted / private / prohibited / unreachable。
+
+    deleted / private / prohibited 是确定结论，调用方可以据此直接结算；
+    unreachable 只说明这次没读到，绝不能当成视频没了去写完成。
+
+    为什么必须读 filter_detail：视频被删时 aweme_detail 是 null，整包只剩
+    filter_detail.filter_reason 这一个线索；只看 aweme_detail 的话删除、限流、
+    设备死号三者完全同形，只能靠「连续读不到几次」猜。
+
+    为什么 core_dep 要两次确认：它是兜底 reason，风控瞬时隐藏、详情组装失败
+    也会返回它。一次就认会把暂时不可见的视频写成完成，客户一分钱拿不回来。
+
+    为什么要缓存 300 秒：settle_sweep 每圈要对一批到期单判一次，不缓存就是
+    每圈多打几次 detail，白耗设备也白担风控。
+    缓存只存确定结论，不存 unreachable —— 抖一次就缓存五分钟，整个池子的
+    判定都会被带成假的，反而误判成「视频没了」写完成。
+    """
+    aweme_id = str(aweme_id or '')
+    if not aweme_id:
+        return 'unreachable'
+    now = time.time()
+    hit = _GONE_CACHE.get(aweme_id)
+    if hit and now - hit[1] < GONE_TTL:
+        return hit[0]
+    pool = _probe_devices()
+    if not pool:
+        return 'unreachable'
+    state = 'unreachable'
+    soft = 0
+    for _ in range(max(2, int(tries))):
+        body = _detail_body(random.choice(pool), aweme_id)
+        if not isinstance(body, dict):
+            continue
+        ad = body.get('aweme_detail')
+        if ad:
+            st = ad.get('status') or {}
+            if st.get('is_delete'):
+                state = 'deleted'
+            elif st.get('is_prohibited'):
+                state = 'prohibited'
+            elif (st.get('is_private') or int(st.get('private_status') or 0) != 0
+                  or st.get('self_see') or int(st.get('part_see') or 0) != 0):
+                state = 'private'
+            else:
+                state = 'alive'
+            break
+        reason = str((body.get('filter_detail') or {}).get('filter_reason') or '')
+        mapped = _GONE_REASON.get(reason) or ''
+        if mapped and reason != 'core_dep':
+            state = mapped
+            break
+        if mapped == 'deleted':
+            soft += 1
+            if soft >= 2:
+                state = 'deleted'
+                break
+            continue
+        # 既没有 aweme_detail 也没有认识的 reason：这次算没读到，接着试
+    if state != 'unreachable':
+        _GONE_CACHE[aweme_id] = (state, now)
+        if len(_GONE_CACHE) > 4096:
+            cut = now - GONE_TTL
+            for k in [k for k, v in _GONE_CACHE.items() if v[1] < cut]:
+                _GONE_CACHE.pop(k, None)
+    return state
 
 
 def probe_alive(device: dict, aweme_id: str) -> bool:

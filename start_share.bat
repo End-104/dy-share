@@ -11,12 +11,27 @@ rem  the odd leftover byte swallows the CR and the first letters of the next
 rem  line, so "rem ..." lines get executed as commands and "set" lines break.
 rem  Chinese notes live in README_share.md instead.
 rem ============================================================
-rem Delivery policy: fulfill what the customer ordered; spill over to next day.
+rem Delivery policy (2026-11-24 on): pay for what actually landed, refund the gap
+rem on the SAME day. Settlement is decided by order_settle.py, not by this file.
+rem   total <= 1200 : one natural day. At SHARE_SETTLE_AFTER (22:30) settle and
+rem                   refund (total - landed) immediately. Nothing carries over.
+rem   total >  1200 : days = ceil(total / 1200), fixed at intake. Slices are
+rem                   [1200]*(days-1) + [total-1200*(days-1)]. Only the last day
+rem                   settles; middle days just consume quota.
+rem   Early settle   : video gone (delisted/private/unreadable) or credited == 0.
 rem Per-goods daily cap now lives in cfg_qw_dy_share_<goods>.json -> video_day_cap:
 rem   goods 1594 = 1200  (max 1200 credited per video per natural day)
-rem   goods 997  = 1200  (same ruler as 1594 since 2026-11-17)
+rem   goods 997  = 0     (0 = unlimited per video; slices still use SHARE_SLICE_CAP)
 rem SHARE_DAY_CAP below is only the fallback when a cfg has no video_day_cap key.
 set SHARE_DAY_CAP=100000
+rem Settlement knobs (see order_settle.py):
+rem   SHARE_SLICE_CAP=1200        slice size, and the per-day cap when day_cap=0
+rem   SHARE_SETTLE_AFTER=22:30    when the due day settles
+rem   SHARE_SETTLE_GRACE_HOURS=6  hard overdue gate after that
+rem   SHARE_SETTLE_EVERY=120      sweep interval, SHARE_SETTLE_BATCH=5 per sweep
+set SHARE_SLICE_CAP=1200
+set SHARE_SETTLE_AFTER=22:30
+set SHARE_SETTLE_GRACE_HOURS=6
 rem Both goods are share-count products; every window eats both, no idle windows.
 set SHARE_GOODS=1594,997
 rem Device gap 90s (was 300). The gate is device-wide, not per video: the
