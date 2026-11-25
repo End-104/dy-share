@@ -445,8 +445,18 @@ def settle(rec, credited, action, refund_fn=None, state_fn=None, dry=True, now=N
             out['state'] = str(state_fn(sn, 7, remark))
             rec['state_written'] = '7'
         except Exception as exc:
-            out['ok'] = False
-            out['msg'] = '{} | 状态7写入失败：{}'.format(out['msg'], str(exc)[:120])
+            # 退款上报成功之后，平台会立刻把单锁死并自行流转到 7，任何人工改写都回
+            # code=1「已经退款或者退单的订单不允许修改」。所以这一步失败是预期路径，
+            # 不能当成「结算没做完」：
+            #   1) 置 ok=False 会让 settle_sweep 不计数、不调用 B.video_release，
+            #      那条视频的锁就一直被这单占着，后续同视频的单永远接不进来；
+            #   2) 也不能照样记 state_written='7'，那是把没发生的事写成证据。
+            # 记成 7_failed + state_err 保留真实原因，退款是否成功只认 refund_resp。
+            rec['state_written'] = '7_failed'
+            out['state_err'] = str(exc)[:160]
+            out['msg'] = '{} | 状态7未写入（平台自行流转）：{}'.format(
+                out['msg'], str(exc)[:120])
+            rec['settle_reason'] = '{} | 状态7:{}'.format(remark, str(exc)[:80])
     save(rec)
     return out
 

@@ -443,7 +443,9 @@ def refund_once(order_sn: str, number: int, remark: str = 'remark'):
     data = {'orderSN': order_sn, 'number': int(number), 'remarks': remark}
     res = http_client.post(f'{function.api_url}{q}', headers=function.get_headers(q, True),
                            json=data, timeout=20)
-    if not function.api_ok(res):
+    # strict=True：退款是动钱的写入，必须看 body 里的 code。
+    # 平台拒绝时照样回 HTTP 200（code=1/403/900），放宽了就变成「没退成却记成退了」。
+    if not function.api_ok(res, strict=True):
         raise RuntimeError(f'refund HTTP {res.status_code} {res.text[:120]}')
     return res.text
 
@@ -454,7 +456,10 @@ def state_once(order_sn: str, state: int = 1, remark: str = 'remark'):
     data = {'orderSN': order_sn, 'state': int(state), 'remarks': remark}
     res = http_client.post(f'{function.api_url}{q}', headers=function.get_headers(q, True),
                            json=data, timeout=20)
-    if not function.api_ok(res):
+    # strict=True：写状态同样要看 code。实测对已退款单写 7 会回 code=1
+    # 「已经退款或者退单的订单不允许修改」，从前被当成成功，台账记下 state_written=7
+    # 这条假证据，事后查账会以为是我们写进去的。
+    if not function.api_ok(res, strict=True):
         raise RuntimeError(f'state HTTP {res.status_code} {res.text[:120]}')
     return res.text
 

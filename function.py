@@ -15347,9 +15347,17 @@ class FunctionApp:
         return headers
 
     @staticmethod
-    def api_ok(res):
-        # 该接口认证失败时仍返回 HTTP 200，只在 body 里给 code=403，所以要单独拦出来；
-        # code=900 这类业务错误照旧放行，保持原有回写流程不变
+    def api_ok(res, strict=False):
+        # 该接口认证失败时仍返回 HTTP 200，只在 body 里给 code=403，所以要单独拦出来。
+        #
+        # strict=False（默认）只把 403 当失败，其余一律放行。这是订单列表/进度这类
+        # 「while True 重试」接口必须的形态：它们把 api_ok 当「这一轮能不能拿到可用数据」，
+        # 收到业务错误就在循环里睡一会再试，收紧白名单会让瞬时业务异常变成死循环。
+        #
+        # strict=True 只在结算写入（报退款 / 写订单状态）时使用：那两处必须知道平台到底
+        # 认没认，不能拿「HTTP 200 就算成功」糊过去。实测 code=1（「已经退款或者退单的
+        # 订单不允许修改」）是业务拒绝，从前被放行，于是台账把没写进去的状态记成已写，
+        # 出错没人能发现。所以严格模式下成功只有 code == 100 一种。
         if res.status_code != 200:
             return False
         try:
@@ -15360,7 +15368,11 @@ class FunctionApp:
             text = (res.text or '').strip()
             return text != ''
         if isinstance(body, dict):
-            return int(body.get('code', 0)) != 403
+            code = int(body.get('code', -1))
+            if strict:
+                # 不带 code 字段的 dict 更不认：没有成功码就没有成功证据
+                return code == 100
+            return code != 403
         # 裸数字/裸字符串：三方接口的正常返回形态
         return True
 
